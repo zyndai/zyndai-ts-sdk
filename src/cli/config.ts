@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
-const DEFAULT_REGISTRY_URL = "https://registry.zynd.ai";
+const DEFAULT_REGISTRY_URL = "https://dns01.zynd.ai";
 
 export function zyndDir(): string {
   return path.join(os.homedir(), ".zynd");
@@ -52,6 +52,7 @@ export function saveCliConfig(data: CliConfig): void {
 
 export function getRegistryUrl(override?: string): string {
   if (override) return override;
+  if (process.env.ZYND_REGISTRY_URL) return process.env.ZYND_REGISTRY_URL;
   const cfg = loadCliConfig();
   return cfg.registry_url ?? DEFAULT_REGISTRY_URL;
 }

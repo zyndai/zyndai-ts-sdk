@@ -31,7 +31,7 @@ export function registerServiceCommand(program: Command): void {
         description: "",
         category: "general",
         tags: [],
-        registry_url: "https://registry.zynd.ai",
+        registry_url: "https://dns01.zynd.ai",
         webhook_port: 5000,
       };
 
@@ -80,7 +80,7 @@ export function registerServiceCommand(program: Command): void {
           description: (raw["description"] as string) ?? "",
           category: (raw["category"] as string) ?? "general",
           tags: (raw["tags"] as string[]) ?? [],
-          registryUrl: (raw["registry_url"] as string) ?? "https://registry.zynd.ai",
+          registryUrl: (raw["registry_url"] as string) ?? "https://dns01.zynd.ai",
           webhookPort: port,
           configDir: ".service",
         });

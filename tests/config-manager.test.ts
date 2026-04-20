@@ -56,7 +56,7 @@ describe("ConfigManager.loadConfig", () => {
         name: "round-trip-agent",
         description: "test",
         entity_url: "http://localhost:5000",
-        registry_url: "https://registry.zynd.ai",
+        registry_url: "https://dns01.zynd.ai",
         created_at: "2025-01-01T00:00:00.000Z",
       };
 

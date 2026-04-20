@@ -165,7 +165,7 @@ describe("resolveKeypair", () => {
         name: "test",
         description: "",
         entity_url: "http://localhost:5000",
-        registry_url: "https://registry.zynd.ai",
+        registry_url: "https://dns01.zynd.ai",
         created_at: new Date().toISOString(),
       })
     );

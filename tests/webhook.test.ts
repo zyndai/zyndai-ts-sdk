@@ -171,7 +171,7 @@ describe("WebhookCommunicationManager", () => {
         category: "general",
         tags: [],
         entity_url: "https://other.example.com",
-        home_registry: "https://registry.zynd.ai",
+        home_registry: "https://dns01.zynd.ai",
         score: 1.0,
         card: { endpoints: { invoke: "https://other.example.com/invoke" } },
       };
@@ -187,7 +187,7 @@ describe("WebhookCommunicationManager", () => {
         category: "general",
         tags: [],
         entity_url: "https://other.example.com/",
-        home_registry: "https://registry.zynd.ai",
+        home_registry: "https://dns01.zynd.ai",
         score: 1.0,
       };
       expect(m.connectAgent(agent)).toBe("https://other.example.com/webhook/sync");

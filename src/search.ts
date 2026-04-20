@@ -4,7 +4,7 @@ import * as registry from "./registry.js";
 export class SearchAndDiscoveryManager {
   private registryUrl: string;
 
-  constructor(registryUrl: string = "https://registry.zynd.ai") {
+  constructor(registryUrl: string = "https://dns01.zynd.ai") {
     this.registryUrl = registryUrl;
   }
 

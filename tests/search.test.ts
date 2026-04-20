@@ -51,7 +51,7 @@ describe("SearchAndDiscoveryManager", () => {
       await mgr.searchByKeyword("x");
 
       const [url] = vi.mocked(globalThis.fetch).mock.calls[0] as [string];
-      expect(url).toBe("https://registry.zynd.ai/v1/search");
+      expect(url).toBe("https://dns01.zynd.ai/v1/search");
     });
 
     it("accepts a custom registry URL", async () => {

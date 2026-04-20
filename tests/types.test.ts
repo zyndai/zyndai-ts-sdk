@@ -12,7 +12,7 @@ describe("ZyndBaseConfigSchema", () => {
     expect(config.name).toBe("");
     expect(config.webhookHost).toBe("0.0.0.0");
     expect(config.webhookPort).toBe(5000);
-    expect(config.registryUrl).toBe("https://registry.zynd.ai");
+    expect(config.registryUrl).toBe("https://dns01.zynd.ai");
     expect(config.category).toBe("general");
     expect(config.autoReconnect).toBe(true);
     expect(config.messageHistoryLimit).toBe(100);
