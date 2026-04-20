@@ -10,4 +10,11 @@ export default defineConfig([
     splitting: false,
     outDir: "dist",
   },
+  {
+    entry: ["src/cli/index.ts"],
+    format: ["esm"],
+    banner: { js: "#!/usr/bin/env node" },
+    outDir: "dist/cli",
+    sourcemap: true,
+  },
 ]);
