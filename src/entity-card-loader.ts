@@ -142,8 +142,8 @@ export function buildRuntimeCard(
     description: staticCard.description ?? "",
     public_key: keypair.publicKeyString,
     entity_url: base,
-    version: staticCard.version ?? "1.0.0",
-    status: "active",
+    version: staticCard.version ?? "1.0",
+    status: "online",
     capabilities: staticCard.capabilities ?? [],
     endpoints: buildEndpoints(base),
     last_heartbeat: now,
@@ -183,7 +183,7 @@ export function resolveCardFromConfig(config: ZyndBaseConfig): StaticEntityCard 
     name: config.name,
     description: config.description,
     category: config.category,
-    version: "1.0.0",
+    version: "1.0",
   };
 
   if (config.tags !== undefined) card.tags = config.tags;
@@ -196,9 +196,9 @@ export function resolveCardFromConfig(config: ZyndBaseConfig): StaticEntityCard 
   if (config.entityPricing !== undefined) {
     // Convert structured pricing to EntityCardPricing.
     card.pricing = {
-      model: "per_call",
+      model: "per-request",
       currency: config.entityPricing.currency,
-      rates: { per_call: config.entityPricing.base_price_usd },
+      rates: { default: config.entityPricing.base_price_usd },
       payment_methods: ["x402"],
     };
   } else if (config.price !== undefined) {
@@ -255,9 +255,9 @@ function parsePriceString(price: string): EntityCardPricing {
   // Strip leading currency symbols ($, €, etc.) then parse the numeric portion.
   const numeric = parseFloat(price.replace(/^[^0-9.]+/, ""));
   return {
-    model: "per_call",
+    model: "per-request",
     currency: "USDC",
-    rates: { per_call: isNaN(numeric) ? 0 : numeric },
+    rates: { default: isNaN(numeric) ? 0 : numeric },
     payment_methods: ["x402"],
   };
 }

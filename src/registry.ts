@@ -164,13 +164,23 @@ export async function getEntity(
   return resp.json() as Promise<Record<string, unknown>>;
 }
 
+// Canonical JSON as raw UTF-8 bytes — convenience wrapper for signing payloads.
+function canonicalJsonBytes(obj: unknown): Uint8Array {
+  return new TextEncoder().encode(canonicalJson(obj));
+}
+
 // PUT /v1/entities/{id} — updates an entity.
-// Authorization: Bearer ed25519:<sig> where sig is over the raw request body bytes.
-// This matches Go's verifyDualKeyOwnership which reads bodyBytes directly.
+// Two-step signing to match the Python SDK:
+//   1. Sign the updates dict, embed body-level `signature` field.
+//   2. Serialize full body (with signature), sign again for Authorization header.
 export async function updateEntity(opts: UpdateEntityOpts): Promise<Record<string, unknown>> {
   const url = `${opts.registryUrl}/v1/entities/${encodeURIComponent(opts.entityId)}`;
-  const bodyBytes = new TextEncoder().encode(JSON.stringify(opts.fields));
-  const authSignature = sign(opts.keypair.privateKeyBytes, bodyBytes);
+
+  const bodySig = sign(opts.keypair.privateKeyBytes, canonicalJsonBytes(opts.fields));
+  const bodyWithSig = { ...opts.fields, signature: bodySig };
+
+  const fullBodyBytes = canonicalJsonBytes(bodyWithSig);
+  const authSignature = sign(opts.keypair.privateKeyBytes, fullBodyBytes);
 
   let resp: Response;
   try {
@@ -180,7 +190,7 @@ export async function updateEntity(opts: UpdateEntityOpts): Promise<Record<strin
         "Content-Type": "application/json",
         Authorization: `Bearer ${authSignature}`,
       },
-      body: bodyBytes,
+      body: fullBodyBytes,
     });
   } catch (err) {
     throw new Error(`updateEntity: network error: ${String(err)}`, { cause: err });
@@ -263,11 +273,11 @@ export async function getEntityCard(
   return resp.json() as Promise<Record<string, unknown>>;
 }
 
-// GET /v1/handles/{handle}/available — returns true if the ZNS handle is unclaimed.
+// GET /v1/handles/{handle}/available — returns handle availability with optional reason.
 export async function checkHandleAvailable(
   registryUrl: string,
   handle: string
-): Promise<boolean> {
+): Promise<{ handle: string; available: boolean; reason?: string }> {
   const url = `${registryUrl}/v1/handles/${encodeURIComponent(handle)}/available`;
   let resp: Response;
   try {
@@ -281,8 +291,12 @@ export async function checkHandleAvailable(
     throw new Error(`checkHandleAvailable: HTTP ${resp.status}: ${text}`);
   }
 
-  const data = (await resp.json()) as Record<string, unknown>;
-  return Boolean(data["available"]);
+  const data = (await resp.json()) as { handle?: string; available?: boolean; reason?: string };
+  return {
+    handle: data.handle ?? handle,
+    available: Boolean(data.available),
+    reason: data.reason,
+  };
 }
 
 // POST /v1/search with fqan filter — resolves the FQAN for an entity, or null if not found.
@@ -325,6 +339,92 @@ export async function getRegistryInfo(registryUrl: string): Promise<Record<strin
   if (!resp.ok) {
     const text = await resp.text().catch(() => "(unreadable)");
     throw new Error(`getRegistryInfo: HTTP ${resp.status}: ${text}`);
+  }
+
+  return resp.json() as Promise<Record<string, unknown>>;
+}
+
+// GET /v1/names/{developer}/{entity}/available — checks if an entity name is available.
+export async function checkEntityNameAvailable(
+  registryUrl: string,
+  developerHandle: string,
+  entityName: string
+): Promise<{ developer: string; entity_name: string; available: boolean; reason?: string }> {
+  const url = `${registryUrl}/v1/names/${encodeURIComponent(developerHandle)}/${encodeURIComponent(entityName)}/available`;
+  let resp: Response;
+  try {
+    resp = await fetch(url);
+  } catch (err) {
+    throw new Error(`checkEntityNameAvailable: network error: ${String(err)}`, { cause: err });
+  }
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "(unreadable)");
+    throw new Error(`checkEntityNameAvailable: HTTP ${resp.status}: ${text}`);
+  }
+
+  const data = (await resp.json()) as {
+    developer?: string;
+    entity_name?: string;
+    available?: boolean;
+    reason?: string;
+  };
+  return {
+    developer: data.developer ?? developerHandle,
+    entity_name: data.entity_name ?? entityName,
+    available: Boolean(data.available),
+    reason: data.reason,
+  };
+}
+
+// GET /v1/categories — returns known entity categories.
+export async function getCategories(registryUrl: string): Promise<string[]> {
+  const url = `${registryUrl}/v1/categories`;
+  let resp: Response;
+  try {
+    resp = await fetch(url);
+  } catch (err) {
+    throw new Error(`getCategories: network error: ${String(err)}`, { cause: err });
+  }
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "(unreadable)");
+    throw new Error(`getCategories: HTTP ${resp.status}: ${text}`);
+  }
+
+  return resp.json() as Promise<string[]>;
+}
+
+// GET /v1/tags — returns known entity tags.
+export async function getTags(registryUrl: string): Promise<string[]> {
+  const url = `${registryUrl}/v1/tags`;
+  let resp: Response;
+  try {
+    resp = await fetch(url);
+  } catch (err) {
+    throw new Error(`getTags: network error: ${String(err)}`, { cause: err });
+  }
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "(unreadable)");
+    throw new Error(`getTags: HTTP ${resp.status}: ${text}`);
+  }
+
+  return resp.json() as Promise<string[]>;
+}
+
+// GET /v1/network/status — returns network status metadata, or null on error.
+export async function getNetworkStatus(registryUrl: string): Promise<Record<string, unknown> | null> {
+  const url = `${registryUrl}/v1/network/status`;
+  let resp: Response;
+  try {
+    resp = await fetch(url);
+  } catch (err) {
+    throw new Error(`getNetworkStatus: network error: ${String(err)}`, { cause: err });
+  }
+
+  if (!resp.ok) {
+    return null;
   }
 
   return resp.json() as Promise<Record<string, unknown>>;

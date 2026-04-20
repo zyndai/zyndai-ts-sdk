@@ -16,5 +16,6 @@ export default defineConfig([
     banner: { js: "#!/usr/bin/env node" },
     outDir: "dist/cli",
     sourcemap: true,
+    noExternal: [/.*/],
   },
 ]);

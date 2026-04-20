@@ -10,6 +10,10 @@ import {
   searchEntities,
   getEntityCard,
   checkHandleAvailable,
+  checkEntityNameAvailable,
+  getCategories,
+  getTags,
+  getNetworkStatus,
   getEntityFqan,
   getRegistryInfo,
 } from "../src/registry";
@@ -198,16 +202,17 @@ describe("getEntity", () => {
 });
 
 describe("updateEntity", () => {
-  it("sends signed PUT with Bearer header over body bytes", async () => {
+  it("double-signs: body-level signature over fields, auth header over full body", async () => {
     const kp = generateKeypair();
     const updated = { entity_id: "zns:abc", name: "updated" };
     mockFetchOnce(updated);
 
+    const fields = { name: "updated", summary: "new summary" };
     const result = await updateEntity({
       registryUrl: REGISTRY,
       entityId: "zns:abc",
       keypair: kp,
-      fields: { name: "updated", summary: "new summary" },
+      fields,
     });
 
     expect(result).toEqual(updated);
@@ -219,10 +224,21 @@ describe("updateEntity", () => {
     const headers = init.headers as Record<string, string>;
     expect(headers["Authorization"]).toMatch(/^Bearer ed25519:/);
 
-    // Authorization sig must be over the exact body bytes sent
+    // Body must contain a signature field (step 1: body-level sig)
     const bodyBytes = init.body as Uint8Array;
-    const expectedSig = sign(kp.privateKeyBytes, bodyBytes);
-    expect(headers["Authorization"]).toBe(`Bearer ${expectedSig}`);
+    const bodyText = new TextDecoder().decode(bodyBytes);
+    const bodyParsed = JSON.parse(bodyText) as Record<string, unknown>;
+    expect(bodyParsed["signature"]).toBeDefined();
+    expect((bodyParsed["signature"] as string).startsWith("ed25519:")).toBe(true);
+
+    // Step 1 body sig is over canonical JSON of the original fields
+    const fieldsCanonical = new TextEncoder().encode(canonicalJson(fields));
+    const expectedBodySig = sign(kp.privateKeyBytes, fieldsCanonical);
+    expect(bodyParsed["signature"]).toBe(expectedBodySig);
+
+    // Step 2 auth sig is over the exact body bytes sent (which include the signature field)
+    const expectedAuthSig = sign(kp.privateKeyBytes, bodyBytes);
+    expect(headers["Authorization"]).toBe(`Bearer ${expectedAuthSig}`);
   });
 
   it("throws on non-2xx", async () => {
@@ -343,19 +359,23 @@ describe("getEntityCard", () => {
 });
 
 describe("checkHandleAvailable", () => {
-  it("returns true when available", async () => {
+  it("returns availability info when available", async () => {
     mockFetchOnce({ available: true, handle: "alice" });
 
     const result = await checkHandleAvailable(REGISTRY, "alice");
-    expect(result).toBe(true);
+    expect(result.available).toBe(true);
+    expect(result.handle).toBe("alice");
 
     const [url] = vi.mocked(globalThis.fetch).mock.calls[0] as [string];
     expect(url).toBe(`${REGISTRY}/v1/handles/alice/available`);
   });
 
-  it("returns false when taken", async () => {
-    mockFetchOnce({ available: false, handle: "bob" });
-    expect(await checkHandleAvailable(REGISTRY, "bob")).toBe(false);
+  it("returns unavailable with reason when taken", async () => {
+    mockFetchOnce({ available: false, handle: "bob", reason: "already claimed" });
+    const result = await checkHandleAvailable(REGISTRY, "bob");
+    expect(result.available).toBe(false);
+    expect(result.handle).toBe("bob");
+    expect(result.reason).toBe("already claimed");
   });
 
   it("throws on non-2xx", async () => {
@@ -423,5 +443,98 @@ describe("getRegistryInfo", () => {
   it("throws with context on network error", async () => {
     mockFetchErrorOnce("connection refused");
     await expect(getRegistryInfo(REGISTRY)).rejects.toThrow("getRegistryInfo: network error");
+  });
+});
+
+describe("checkEntityNameAvailable", () => {
+  it("returns availability info for a name", async () => {
+    mockFetchOnce({ developer: "alice", entity_name: "my-agent", available: true });
+
+    const result = await checkEntityNameAvailable(REGISTRY, "alice", "my-agent");
+    expect(result.available).toBe(true);
+    expect(result.developer).toBe("alice");
+    expect(result.entity_name).toBe("my-agent");
+
+    const [url] = vi.mocked(globalThis.fetch).mock.calls[0] as [string];
+    expect(url).toBe(`${REGISTRY}/v1/names/alice/my-agent/available`);
+  });
+
+  it("returns unavailable with reason", async () => {
+    mockFetchOnce({ developer: "bob", entity_name: "taken", available: false, reason: "already registered" });
+
+    const result = await checkEntityNameAvailable(REGISTRY, "bob", "taken");
+    expect(result.available).toBe(false);
+    expect(result.reason).toBe("already registered");
+  });
+
+  it("throws on non-2xx", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response("error", { status: 500 })
+    );
+    await expect(checkEntityNameAvailable(REGISTRY, "x", "y")).rejects.toThrow("HTTP 500");
+  });
+});
+
+describe("getCategories", () => {
+  it("returns category list", async () => {
+    mockFetchOnce(["general", "ai", "finance"]);
+
+    const result = await getCategories(REGISTRY);
+    expect(result).toEqual(["general", "ai", "finance"]);
+
+    const [url] = vi.mocked(globalThis.fetch).mock.calls[0] as [string];
+    expect(url).toBe(`${REGISTRY}/v1/categories`);
+  });
+
+  it("throws on non-2xx", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response("error", { status: 500 })
+    );
+    await expect(getCategories(REGISTRY)).rejects.toThrow("HTTP 500");
+  });
+});
+
+describe("getTags", () => {
+  it("returns tag list", async () => {
+    mockFetchOnce(["nlp", "search", "trading"]);
+
+    const result = await getTags(REGISTRY);
+    expect(result).toEqual(["nlp", "search", "trading"]);
+
+    const [url] = vi.mocked(globalThis.fetch).mock.calls[0] as [string];
+    expect(url).toBe(`${REGISTRY}/v1/tags`);
+  });
+
+  it("throws on non-2xx", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response("error", { status: 500 })
+    );
+    await expect(getTags(REGISTRY)).rejects.toThrow("HTTP 500");
+  });
+});
+
+describe("getNetworkStatus", () => {
+  it("returns status object on 200", async () => {
+    const status = { node_count: 5, healthy: true };
+    mockFetchOnce(status);
+
+    const result = await getNetworkStatus(REGISTRY);
+    expect(result).toEqual(status);
+
+    const [url] = vi.mocked(globalThis.fetch).mock.calls[0] as [string];
+    expect(url).toBe(`${REGISTRY}/v1/network/status`);
+  });
+
+  it("returns null on non-2xx", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response("unavailable", { status: 503 })
+    );
+    const result = await getNetworkStatus(REGISTRY);
+    expect(result).toBeNull();
+  });
+
+  it("throws on network error", async () => {
+    mockFetchErrorOnce("ECONNREFUSED");
+    await expect(getNetworkStatus(REGISTRY)).rejects.toThrow("getNetworkStatus: network error");
   });
 });

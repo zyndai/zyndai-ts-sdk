@@ -68,7 +68,7 @@ export function saveKeypair(kp: Ed25519Keypair, filePath: string, derivationMeta
   if (derivationMetadata) {
     data.derived_from = derivationMetadata;
   }
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
 export function generateEntityId(publicKeyBytes: Uint8Array, entityType: string = "agent"): string {

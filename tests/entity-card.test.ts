@@ -45,7 +45,7 @@ describe("buildEntityCard", () => {
     expect(card.signature).toBeUndefined();
   });
 
-  it("defaults version to 1.0.0 when omitted", () => {
+  it("defaults version to 1.0 when omitted", () => {
     const kp = generateKeypair();
     const card = buildEntityCard({
       entityId: "zns:test",
@@ -54,7 +54,7 @@ describe("buildEntityCard", () => {
       entityUrl: "https://x.com",
       keypair: kp,
     });
-    expect(card.version).toBe("1.0.0");
+    expect(card.version).toBe("1.0");
   });
 
   it("flattens capabilities dict to array of {name, category}", () => {

@@ -51,7 +51,7 @@ export class ConfigManager {
 
     const filePath = configPath(configDir);
     try {
-      fs.writeFileSync(filePath, JSON.stringify(config, null, 2), "utf-8");
+      fs.writeFileSync(filePath, JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
     } catch (err) {
       throw new Error(`Failed to write config to ${filePath}`, { cause: err });
     }

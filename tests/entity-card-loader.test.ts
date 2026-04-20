@@ -287,9 +287,9 @@ describe("resolveCardFromConfig", () => {
     });
     const card = resolveCardFromConfig(config);
     expect(card.pricing).toBeDefined();
-    expect(card.pricing!.model).toBe("per_call");
+    expect(card.pricing!.model).toBe("per-request");
     expect(card.pricing!.currency).toBe("USDC");
-    expect(card.pricing!.rates.per_call).toBeCloseTo(0.02);
+    expect(card.pricing!.rates.default).toBeCloseTo(0.02);
     expect(card.pricing!.payment_methods).toContain("x402");
   });
 
@@ -301,7 +301,7 @@ describe("resolveCardFromConfig", () => {
     });
     const card = resolveCardFromConfig(config);
     expect(card.pricing).toBeDefined();
-    expect(card.pricing!.rates.per_call).toBeCloseTo(0.05);
+    expect(card.pricing!.rates.default).toBeCloseTo(0.05);
   });
 
   it("entityPricing takes priority over price string", () => {
@@ -312,7 +312,7 @@ describe("resolveCardFromConfig", () => {
       entityPricing: { base_price_usd: 0.01, currency: "USDC" },
     });
     const card = resolveCardFromConfig(config);
-    expect(card.pricing!.rates.per_call).toBeCloseTo(0.01);
+    expect(card.pricing!.rates.default).toBeCloseTo(0.01);
   });
 
   it("includes optional metadata fields when present", () => {
@@ -361,7 +361,7 @@ describe("buildRuntimeCard", () => {
     expect(card.entity_id).toBe(kp.entityId);
     expect(card.public_key).toBe(kp.publicKeyString);
     expect(card.entity_url).toBe("https://example.com");
-    expect(card.status).toBe("active");
+    expect(card.status).toBe("online");
   });
 
   it("builds correct endpoint URLs from the base URL", () => {
@@ -379,10 +379,10 @@ describe("buildRuntimeCard", () => {
     expect(card.signature).toMatch(/^ed25519:[A-Za-z0-9+/]+=*$/);
   });
 
-  it("defaults version to 1.0.0 when not provided in static card", () => {
+  it("defaults version to 1.0 when not provided in static card", () => {
     const kp = generateKeypair();
     const card = buildRuntimeCard({ name: "Agent" }, "https://example.com", kp);
-    expect(card.version).toBe("1.0.0");
+    expect(card.version).toBe("1.0");
   });
 
   it("strips trailing slashes from base URL", () => {

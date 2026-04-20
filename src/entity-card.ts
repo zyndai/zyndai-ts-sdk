@@ -76,7 +76,7 @@ export function buildEntityCard(opts: BuildEntityCardOpts): EntityCard {
     keypair,
     capabilities = {},
     price,
-    version = "1.0.0",
+    version = "1.0",
   } = opts;
 
   const baseUrl = stripWebhookSuffix(entityUrl);
