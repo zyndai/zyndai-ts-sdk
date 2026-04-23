@@ -80,6 +80,15 @@ export class ZyndBase {
     });
   }
 
+  /**
+   * Convenience accessor — mirrors `zynd_agent.webhook_url` on the Python SDK.
+   * Templates reference this directly after `await agent.start()` to print the
+   * listen URL.
+   */
+  get webhookUrl(): string {
+    return this.webhook.webhookUrl;
+  }
+
   async start(): Promise<void> {
     await this.webhook.start();
     this.writeCardFile();

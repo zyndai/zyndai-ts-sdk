@@ -3,8 +3,11 @@ import { z } from "zod";
 export enum AgentFramework {
   LANGCHAIN = "langchain",
   LANGGRAPH = "langgraph",
-  CUSTOM = "custom",
+  CREWAI = "crewai",
+  PYDANTIC_AI = "pydantic_ai",
   VERCEL_AI = "vercel_ai",
+  MASTRA = "mastra",
+  CUSTOM = "custom",
 }
 
 export const ZyndBaseConfigSchema = z.object({
