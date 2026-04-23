@@ -24,6 +24,7 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsup",
+    "postbuild": "node -e \"const fs=require('fs'),path=require('path');function walk(i,o){if(!fs.existsSync(i))return;fs.mkdirSync(o,{recursive:true});for(const e of fs.readdirSync(i,{withFileTypes:true})){const ip=path.join(i,e.name),op=path.join(o,e.name);if(e.isDirectory())walk(ip,op);else if(e.isFile()&&e.name.endsWith('.tpl'))fs.copyFileSync(ip,op);}}walk(path.resolve('src/templates'),path.resolve('dist/templates'));\"",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",

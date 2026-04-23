@@ -1,0 +1,105 @@
+/**
+ * __AGENT_NAME__ — Mastra Agent on the ZyndAI Network
+ *
+ * Install dependencies:
+ *   npm install zyndai @mastra/core @ai-sdk/openai zod
+ *
+ * Run:
+ *   npx tsx agent.ts
+ */
+
+import "dotenv/config";
+import * as fs from "node:fs";
+import { ZyndAIAgent, AgentConfigSchema, AgentMessage } from "zyndai";
+
+import { Agent } from "@mastra/core/agent";
+import { createTool } from "@mastra/core/tools";
+import { openai } from "@ai-sdk/openai";
+import { z } from "zod";
+
+import { RequestPayload, ResponsePayload, MAX_FILE_SIZE_BYTES } from "./payload.js";
+
+const _config: Record<string, any> = fs.existsSync("agent.config.json")
+  ? JSON.parse(fs.readFileSync("agent.config.json", "utf-8"))
+  : {};
+
+const helloTool = createTool({
+  id: "hello",
+  description: "A simple demo tool. Replace with your own tools.",
+  inputSchema: z.object({ query: z.string() }),
+  outputSchema: z.object({ greeting: z.string() }),
+  execute: async ({ context }) => ({
+    greeting: `Hello! You asked: ${context.query}`,
+  }),
+});
+
+function createAgent() {
+  return new Agent({
+    name: "__AGENT_NAME__",
+    instructions: "You are __AGENT_NAME__, a helpful AI assistant.",
+    model: openai("gpt-4o-mini"),
+    tools: { helloTool },
+  });
+}
+
+async function main() {
+  const agentConfig = AgentConfigSchema.parse({
+    name: _config.name ?? "__AGENT_NAME__",
+    description:
+      _config.description ??
+      "__AGENT_NAME__ — a Mastra agent on the ZyndAI network.",
+    capabilities: {
+      ai: ["nlp", "mastra", "tool_use"],
+      protocols: ["http"],
+    },
+    category: _config.category ?? "general",
+    tags: _config.tags ?? ["mastra"],
+    summary: _config.summary ?? "__AGENT_NAME__ agent",
+    webhookHost: "0.0.0.0",
+    webhookPort: _config.webhook_port ?? 5000,
+    registryUrl:
+      process.env.ZYND_REGISTRY_URL ??
+      _config.registry_url ??
+      "http://localhost:8080",
+    keypairPath:
+      process.env.ZYND_AGENT_KEYPAIR_PATH ?? _config.keypair_path,
+    entityUrl: process.env.ZYND_ENTITY_URL ?? _config.entity_url,
+    price: _config.price,
+    entityPricing: _config.entity_pricing,
+  });
+
+  const zyndAgent = new ZyndAIAgent(agentConfig);
+  const mastraAgent = createAgent();
+  zyndAgent.setMastraAgent(mastraAgent as any);
+
+  zyndAgent.webhook.addMessageHandler(async (message: AgentMessage) => {
+    try {
+      const response = await zyndAgent.invoke(message.content);
+      zyndAgent.webhook.setResponse(message.messageId, response);
+    } catch (e) {
+      zyndAgent.webhook.setResponse(
+        message.messageId,
+        `Error: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  });
+
+  await zyndAgent.start();
+
+  console.log(`\n__AGENT_NAME__ is running (Mastra)`);
+  console.log(`Webhook: ${zyndAgent.webhookUrl}`);
+  console.log("Type 'exit' to quit\n");
+
+  process.stdin.on("data", (buf) => {
+    if (buf.toString().trim().toLowerCase() === "exit") process.exit(0);
+  });
+
+  void RequestPayload;
+  void ResponsePayload;
+  void MAX_FILE_SIZE_BYTES;
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
