@@ -2,6 +2,58 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  LANGUAGES,
+  LANGUAGE_LABELS,
+  serviceTemplateFile,
+  payloadTemplateFile,
+  entryExtension,
+  type Language,
+} from "../templates/frameworks.js";
+import { pickOption, promptText } from "./prompts.js";
+
+function templatesDir(): string {
+  const here =
+    typeof __dirname !== "undefined"
+      ? __dirname
+      : path.dirname(fileURLToPath(import.meta.url));
+  return path.resolve(here, "..", "templates");
+}
+
+function loadTemplate(relPath: string): string | null {
+  const p = path.join(templatesDir(), relPath);
+  if (!fs.existsSync(p)) return null;
+  return fs.readFileSync(p, "utf-8");
+}
+
+function isLanguage(v: string): v is Language {
+  return (LANGUAGES as readonly string[]).includes(v);
+}
+
+async function resolveLanguage(flag: string | undefined): Promise<Language> {
+  if (flag) {
+    if (!isLanguage(flag)) {
+      throw new Error(
+        `Invalid --lang: ${flag}. Must be one of: ${LANGUAGES.join(", ")}`,
+      );
+    }
+    return flag;
+  }
+  const picked = await pickOption("Select a language", [
+    { key: "ts", label: "TypeScript", description: "Node.js service — npm, tsx, Zod" },
+    { key: "py", label: "Python", description: "Python service — pip, pydantic" },
+  ]);
+  return picked.key as Language;
+}
+
+async function resolveName(flag: string | undefined, cwd: string): Promise<string> {
+  if (flag) return flag;
+  const def = path.basename(cwd);
+  const name = await promptText("Service name", def);
+  if (!name) throw new Error("Service name is required.");
+  return name;
+}
 
 export function registerServiceCommand(program: Command): void {
   const service = program
@@ -10,68 +62,186 @@ export function registerServiceCommand(program: Command): void {
 
   service
     .command("init")
-    .description("Scaffold a new service project in the current directory")
-    .option("--name <name>", "Service name")
-    .action((opts: { name?: string }) => {
+    .description("Scaffold a new service project in the current directory (TypeScript or Python)")
+    .option("--lang <lang>", "Target language (ts|py) — prompts if omitted")
+    .option("--name <name>", "Service name — prompts if omitted")
+    .action(async (opts: { lang?: string; name?: string }) => {
       const cwd = process.cwd();
-      const serviceDir = path.join(cwd, ".service");
 
-      if (fs.existsSync(serviceDir)) {
-        console.error(chalk.yellow(".service directory already exists. This is already a service project."));
+      let lang: Language;
+      let name: string;
+      try {
+        lang = await resolveLanguage(opts.lang);
+        name = await resolveName(opts.name, cwd);
+      } catch (err) {
+        console.error(
+          chalk.red(err instanceof Error ? err.message : String(err)),
+        );
         process.exitCode = 1;
         return;
       }
 
-      const name = opts.name ?? path.basename(cwd);
+      const ext = entryExtension(lang);
 
-      fs.mkdirSync(serviceDir, { recursive: true });
+      // TS: .service/service.json + service.ts + payload.ts
+      // Py: service.config.json + service.py + payload.py
+      const configDir = lang === "ts" ? path.join(cwd, ".service") : cwd;
+      const configFileName = lang === "ts" ? "service.json" : "service.config.json";
+      const configFilePath = path.join(configDir, configFileName);
+      const entryFile = path.join(cwd, `service.${ext}`);
+      const payloadFile = path.join(cwd, `payload.${ext}`);
+
+      if (fs.existsSync(configFilePath)) {
+        console.error(
+          chalk.yellow(
+            `${path.relative(cwd, configFilePath)} already exists. This directory is already a service project.`,
+          ),
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      if (lang === "ts") fs.mkdirSync(configDir, { recursive: true });
 
       const serviceJson = {
         name,
-        description: "",
+        language: lang,
+        description: `${name} service`,
         category: "general",
         tags: [],
+        summary: "",
         registry_url: "https://dns01.zynd.ai",
         webhook_port: 5000,
       };
 
-      fs.writeFileSync(
-        path.join(serviceDir, "service.json"),
-        JSON.stringify(serviceJson, null, 2),
-      );
+      fs.writeFileSync(configFilePath, JSON.stringify(serviceJson, null, 2));
 
-      const entryFile = path.join(cwd, "service.ts");
-      if (!fs.existsSync(entryFile)) {
-        fs.writeFileSync(entryFile, buildServiceEntry(name));
+      // .env scaffold.
+      const envPath = path.join(cwd, ".env");
+      if (!fs.existsSync(envPath)) {
+        fs.writeFileSync(
+          envPath,
+          [
+            `ZYND_REGISTRY_URL=https://dns01.zynd.ai`,
+            `# ZYND_SERVICE_KEYPAIR_PATH=./keypair.json`,
+            "",
+          ].join("\n"),
+        );
       }
 
-      console.log(chalk.green(`Service "${name}" scaffolded.`));
+      // Entry file: service.ts or service.py.
+      const serviceTpl = loadTemplate(serviceTemplateFile(lang));
+      if (serviceTpl) {
+        if (!fs.existsSync(entryFile)) {
+          fs.writeFileSync(
+            entryFile,
+            serviceTpl.replace(/__SERVICE_NAME__/g, name),
+          );
+        }
+      } else {
+        console.warn(
+          chalk.yellow(`Warning: template not found: ${serviceTemplateFile(lang)}`),
+        );
+      }
+
+      // Payload schema.
+      const payloadTpl = loadTemplate(payloadTemplateFile(lang));
+      if (payloadTpl && !fs.existsSync(payloadFile)) {
+        // payload.tpl uses __AGENT_NAME__ as the entity name placeholder
+        // (both agents and services reuse the same payload skeleton).
+        fs.writeFileSync(
+          payloadFile,
+          payloadTpl.replace(/__AGENT_NAME__/g, name),
+        );
+      }
+
       console.log();
-      console.log(`  ${chalk.dim("Config")}  .service/service.json`);
-      console.log(`  ${chalk.dim("Entry")}   service.ts`);
+      console.log(chalk.green(`Service "${name}" scaffolded (${LANGUAGE_LABELS[lang]}).`));
       console.log();
-      console.log(chalk.dim("  Next: edit service.ts, then run `zynd service run`"));
+      console.log(`  ${chalk.dim("Language")}    ${LANGUAGE_LABELS[lang]}`);
+      console.log(`  ${chalk.dim("Config")}      ${path.relative(cwd, configFilePath)}`);
+      console.log(`  ${chalk.dim("Entry")}       service.${ext}`);
+      console.log(`  ${chalk.dim("Payload")}     payload.${ext}`);
+      console.log(`  ${chalk.dim("Env")}         .env`);
+      console.log();
+      console.log(chalk.bold("  Next steps:"));
+      console.log(
+        `    1. Install deps: ${chalk.cyan(lang === "ts" ? "npm install zyndai" : "pip install zyndai-agent")}`,
+      );
+      console.log(`    2. Edit service.${ext}`);
+      console.log(`    3. Run: ${chalk.cyan("zynd service run")}`);
     });
 
   service
     .command("run")
-    .description("Start the service from the current directory")
+    .description("Start the service from the current directory (auto-detects TS or Python)")
     .option("--port <port>", "Override webhook port", parseInt)
     .action(async (opts: { port?: number }) => {
-      const configPath = path.join(process.cwd(), ".service", "service.json");
-      if (!fs.existsSync(configPath)) {
-        console.error(chalk.red("No .service/service.json found. Run: zynd service init"));
+      const cwd = process.cwd();
+
+      const tsConfigPath = path.join(cwd, ".service", "service.json");
+      const pyConfigPath = path.join(cwd, "service.config.json");
+      const configPath = fs.existsSync(tsConfigPath)
+        ? tsConfigPath
+        : fs.existsSync(pyConfigPath)
+          ? pyConfigPath
+          : null;
+
+      if (!configPath) {
+        console.error(
+          chalk.red(
+            "No service config found (.service/service.json or service.config.json). Run: zynd service init",
+          ),
+        );
         process.exitCode = 1;
         return;
       }
 
-      const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+      const raw = JSON.parse(
+        fs.readFileSync(configPath, "utf-8"),
+      ) as Record<string, unknown>;
       const name = (raw["name"] as string) ?? "unnamed-service";
       const port = opts.port ?? (raw["webhook_port"] as number) ?? 5000;
 
       console.log(chalk.dim(`Starting service "${name}" on port ${port}...`));
       console.log();
 
+      const declaredLang = raw["language"] as string | undefined;
+      const tsEntries = ["service.ts", "service.js", "service.mjs", "service.cjs"];
+      const pyEntries = ["service.py"];
+      const entries =
+        declaredLang === "py" ? [...pyEntries, ...tsEntries] : [...tsEntries, ...pyEntries];
+
+      const entry = entries
+        .map((f) => path.join(cwd, f))
+        .find((f) => fs.existsSync(f));
+
+      if (entry) {
+        const { spawn } = await import("node:child_process");
+        const env = { ...process.env };
+        if (opts.port) env["WEBHOOK_PORT"] = String(opts.port);
+
+        let cmd: string;
+        let args: string[];
+        if (entry.endsWith(".ts")) {
+          cmd = "npx";
+          args = ["tsx", entry];
+        } else if (entry.endsWith(".py")) {
+          cmd = process.platform === "win32" ? "python" : "python3";
+          args = [entry];
+        } else {
+          cmd = "node";
+          args = [entry];
+        }
+
+        const child = spawn(cmd, args, { stdio: "inherit", env });
+        child.on("exit", (code) => {
+          process.exitCode = code ?? 0;
+        });
+        return;
+      }
+
+      // Fallback: TS in-process echo.
       try {
         const { ZyndService } = await import("../service.js");
         const { ServiceConfigSchema } = await import("../types.js");
@@ -80,36 +250,21 @@ export function registerServiceCommand(program: Command): void {
           description: (raw["description"] as string) ?? "",
           category: (raw["category"] as string) ?? "general",
           tags: (raw["tags"] as string[]) ?? [],
-          registryUrl: (raw["registry_url"] as string) ?? "https://dns01.zynd.ai",
+          registryUrl:
+            (raw["registry_url"] as string) ?? "https://dns01.zynd.ai",
           webhookPort: port,
           configDir: ".service",
         });
         const svc = new ZyndService(config);
-
         svc.setHandler((input: string) => `Service echo: ${input}`);
         await svc.start();
       } catch (err) {
-        console.error(chalk.red(`Service failed to start: ${err instanceof Error ? err.message : String(err)}`));
+        console.error(
+          chalk.red(
+            `Service failed to start: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
         process.exitCode = 1;
       }
     });
-}
-
-function buildServiceEntry(name: string): string {
-  return `import { ZyndService } from "zyndai-agent";
-
-const service = new ZyndService({
-  name: "${name}",
-  description: "TODO: describe your service",
-  category: "general",
-  webhookPort: 5000,
-  configDir: ".service",
-});
-
-service.setHandler(async (input) => {
-  return \`Service response: \${input}\`;
-});
-
-await service.start();
-`;
 }
