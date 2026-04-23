@@ -1,6 +1,8 @@
 # ZyndAI Agent SDK (TypeScript)
 
-A TypeScript/JavaScript SDK for building **agents** and **services** on the ZyndAI Network. Provides **Ed25519 identity**, **decentralized registry**, **Entity Cards**, **WebSocket heartbeat liveness**, **HTTP webhooks**, **x402 micropayments**, and **multi-framework support** (LangChain.js, LangGraph.js, Vercel AI SDK, custom functions).
+A TypeScript/JavaScript SDK for building **agents** and **services** on the ZyndAI Network. Provides **Ed25519 identity**, **decentralized registry**, **Entity Cards**, **WebSocket heartbeat liveness**, **HTTP webhooks**, **x402 micropayments**, and **multi-framework support** — LangChain.js, LangGraph.js, CrewAI-style multi-agent, PydanticAI-style typed output (Zod + Vercel AI), Vercel AI SDK, Mastra, and custom functions.
+
+The bundled `zynd` CLI scaffolds projects in **both TypeScript and Python** — pick a language, pick a framework, and it writes the right files for you (see [Framework Templates](#framework-templates)).
 
 Dual ESM/CJS — works with both `import` and `require`.
 
@@ -31,10 +33,14 @@ Dual ESM/CJS — works with both `import` and `require`.
               │                                │
      ┌────────┴────────┐              ┌────────┴────────┐
      │  ZyndAIAgent    │              │  ZyndService    │
-     │  (LLM frameworks)│             │  (functions)    │
+     │ (LLM frameworks)│              │  (functions)    │
      │  LangChain.js   │              │                 │
      │  LangGraph.js   │              │  setHandler(    │
-     │  Vercel AI SDK  │              │    myFn)        │
+     │  CrewAI-style   │              │    myFn)        │
+     │  PydanticAI /   │              │                 │
+     │   Zod-typed     │              │                 │
+     │  Vercel AI SDK  │              │                 │
+     │  Mastra         │              │                 │
      │  Custom         │              │                 │
      └─────────────────┘              └─────────────────┘
 ```
@@ -97,8 +103,17 @@ agent.setLangchainAgent(agentExecutor);
 // LangGraph.js
 agent.setLanggraphAgent(compiledGraph);
 
+// CrewAI-style multi-agent (any object with .kickoff({ inputs }) -> { raw })
+agent.setCrewAgent(crew);
+
+// PydanticAI-style (any object with async .run(input) -> { data })
+agent.setPydanticAiAgent(typedAgent);
+
 // Vercel AI SDK
 agent.setVercelAiAgent(aiAgent);
+
+// Mastra
+agent.setMastraAgent(mastraAgent);
 
 // Custom function
 agent.setCustomAgent(async (input) => `Response: ${input}`);
@@ -145,11 +160,18 @@ zynd keys create --name NAME           Create standalone keypair
 zynd keys derive --index N             HD-derive from developer key
 zynd keys show NAME                    Display keypair details
 
-zynd agent init                        Scaffold agent project
-zynd agent run                         Start agent, register, heartbeat
+zynd agent init                        Scaffold agent (interactive picker)
+  --lang LANG                            ts | py (prompts if omitted)
+  --framework FW                         e.g. langchain, langgraph, crewai,
+                                         pydantic-ai, vercel-ai, mastra,
+                                         custom (prompts if omitted)
+  --name NAME                            agent display name
+zynd agent run                         Start agent (auto-detects TS/Python)
 
-zynd service init                      Scaffold service project
-zynd service run                       Start service, register, heartbeat
+zynd service init                      Scaffold service (interactive picker)
+  --lang LANG                            ts | py (prompts if omitted)
+  --name NAME                            service display name
+zynd service run                       Start service (auto-detects TS/Python)
 
 zynd register --name N --agent-url U   Register entity on registry
 zynd register --card PATH              Register from Entity Card file
@@ -168,6 +190,97 @@ zynd resolve FQAN                      Resolve FQAN to entity
 zynd info --entity-id ID               Entity details
 zynd status --entity-id ID             Entity status
 ```
+
+## Framework Templates
+
+`zynd agent init` walks you through a three-step picker — language, framework, name — and then scaffolds a ready-to-run project. Pass `--lang`, `--framework`, and/or `--name` to skip any of the prompts (useful for CI).
+
+### Interactive flow
+
+```
+$ zynd agent init
+
+Select a language
+
+  ❯ 1) TypeScript  — Node.js agent — npm, tsx, Zod
+     2) Python      — Python agent — pip, pydantic
+
+? Choose [1-2] (default 1): 1
+
+Select a framework (TypeScript)
+
+  ❯ 1) LangChain.js              — Tool-calling agents with memory and search
+     2) LangGraph.js              — Graph-based agent with explicit state
+     3) CrewAI-style (LangChain)  — Multi-agent researcher + analyst
+     4) PydanticAI-style (Zod)    — Type-safe, schema-validated outputs
+     5) Vercel AI SDK             — Tool-calling, streaming, generateObject
+     6) Mastra                    — Full-stack TS agent framework
+     7) Custom                    — Bring your own framework
+
+? Choose [1-7] (default 1): 1
+? Agent name (default: my-agent):
+```
+
+### TypeScript frameworks
+
+| Key | Framework | Notes |
+|---|---|---|
+| `langchain` | [LangChain.js](https://js.langchain.com) | Tool-calling agent with memory + Tavily search. |
+| `langgraph` | [LangGraph.js](https://langchain-ai.github.io/langgraphjs/) | Graph-based agent with explicit state transitions. |
+| `crewai` | CrewAI-style | CrewAI has no official TS port; the template ships a researcher + analyst crew on LangChain.js with a `.kickoff({ inputs }) -> { raw }` shape so the community [`crewai-ts`](https://www.npmjs.com/package/crewai-ts) package is a drop-in. |
+| `pydantic-ai` | PydanticAI-style | [Zod](https://zod.dev) schemas + Vercel AI's `generateObject` for schema-validated outputs. |
+| `vercel-ai` | [Vercel AI SDK](https://sdk.vercel.ai) | Tool-calling + streaming with any provider. |
+| `mastra` | [Mastra](https://mastra.ai) | Full-stack TS agent framework — agents, tools, workflows, memory. |
+| `custom` | Custom | Minimal `handleRequest(input)` — bring your own framework. |
+
+### Python frameworks (mirrors `zyndai-agent`'s set)
+
+| Key | Framework | Notes |
+|---|---|---|
+| `langchain` | [LangChain](https://python.langchain.com) | Tool-calling agent with memory + Tavily search. |
+| `langgraph` | [LangGraph](https://langchain-ai.github.io/langgraph/) | Graph-based agent with explicit state. |
+| `crewai` | [CrewAI](https://www.crewai.com) | Multi-agent researcher + analyst crew. |
+| `pydantic-ai` | [PydanticAI](https://ai.pydantic.dev) | Type-safe agents with structured outputs. |
+| `custom` | Custom | Minimal `handle_request(query)` — bring your own framework. |
+
+### Scaffolded layouts
+
+TypeScript target:
+
+```
+.agent/agent.json     # runtime config (name, framework, tags, ports, registry URL)
+.env                  # env vars: ZYND_REGISTRY_URL, framework API keys
+agent.ts              # framework-specific entry point
+payload.ts            # Zod RequestPayload / ResponsePayload schemas
+.well-known/          # auto-regenerated Entity Card on first run
+```
+
+Python target (matches `zyndai-agent` conventions):
+
+```
+agent.config.json     # runtime config — same keys, just at project root
+.env                  # env vars: ZYND_REGISTRY_URL, framework API keys
+agent.py              # framework-specific entry point
+payload.py            # Pydantic RequestPayload / ResponsePayload schemas
+.well-known/          # auto-regenerated Entity Card on first run
+```
+
+### Non-interactive usage
+
+```bash
+# TypeScript LangChain agent, no prompts:
+zynd agent init --lang ts --framework langchain --name stock-agent
+
+# Python CrewAI agent:
+zynd agent init --lang py --framework crewai --name research-crew
+
+# Service (no framework prompt — services wrap a plain function):
+zynd service init --lang py --name weather-api
+```
+
+### `zynd agent run` / `zynd service run`
+
+Reads the config file, figures out whether the project is TS or Python (from the `language` field, falling back to which entry file exists), and spawns the right runtime — `npx tsx agent.ts` for TS, `python3 agent.py` for Python. If the developer hasn't created an entry file yet, `run` falls back to a built-in TypeScript echo agent so registration + heartbeat can be tested against the registry.
 
 ## Ed25519 Identity
 
