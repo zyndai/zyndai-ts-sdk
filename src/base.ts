@@ -3,7 +3,7 @@ import * as path from "node:path";
 import WebSocket from "ws";
 import chalk from "chalk";
 import { z } from "zod";
-import type { ZyndBaseConfig } from "./types.js";
+import type { ZyndBaseConfig, ServiceConfig } from "./types.js";
 import { ZyndBaseConfigSchema } from "./types.js";
 import {
   generateEntityId,
@@ -53,8 +53,8 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 const HEARTBEAT_RECONNECT_DELAY_MS = 5_000;
 
 export class ZyndBase {
-  protected _entityLabel = "ZYND ENTITY";
-  protected _entityType = "agent";
+  protected _entityLabel: string;
+  protected _entityType: string;
 
   readonly config: ZyndBaseConfig;
   readonly keypair: Ed25519Keypair;
@@ -71,7 +71,19 @@ export class ZyndBase {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatStopped = false;
 
-  constructor(config: ZyndBaseConfig, validation: ValidationOptions = {}) {
+  // entityType MUST be passed through the constructor — subclass class-field
+  // initializers run AFTER super() returns, so reading `this._entityType`
+  // inside this constructor would otherwise always see the base default and
+  // generate the wrong entityId (e.g., bare `zns:<hex>` for services instead
+  // of `zns:svc:<hex>`).
+  constructor(
+    config: ZyndBaseConfig,
+    validation: ValidationOptions = {},
+    entityType: string = "agent",
+    entityLabel: string = "ZYND ENTITY",
+  ) {
+    this._entityType = entityType;
+    this._entityLabel = entityLabel;
     this.config = ZyndBaseConfigSchema.parse(config);
     this.validation = validation;
 
@@ -190,6 +202,26 @@ export class ZyndBase {
         }
       : undefined;
 
+    // Services must publish a service_endpoint — registry rejects POST /v1/entities
+    // without it. Default to entityUrl when unset; users can override by setting
+    // ServiceConfig.serviceEndpoint (e.g., an ngrok URL when developing locally).
+    let serviceEndpoint: string | undefined;
+    let openapiUrl: string | undefined;
+    if (this._entityType === "service") {
+      const svc = this.config as Partial<ServiceConfig>;
+      serviceEndpoint = svc.serviceEndpoint || entityUrl;
+      openapiUrl = svc.openapiUrl;
+    }
+
+    if (this.isLoopbackUrl(entityUrl)) {
+      console.log(
+        chalk.yellow(
+          `[registry] entity_url ${entityUrl} is a loopback address — the registry and other agents will not be able to reach this ${this._entityType}. ` +
+            `Set ZyndBaseConfig.entityUrl/webhookUrl to a publicly reachable URL (ngrok, cloudflared, or a real domain) before going live.`,
+        ),
+      );
+    }
+
     let existing: Record<string, unknown> | null;
     try {
       existing = await getEntity(this.config.registryUrl, this.entityId);
@@ -202,31 +234,41 @@ export class ZyndBase {
       return;
     }
 
-    if (existing) {
-      console.log(chalk.dim(`[registry] ${this._entityType} already registered — updating...`));
+    const updateFields: Record<string, unknown> = {
+      name: this.config.name,
+      entity_url: entityUrl,
+      category: this.config.category,
+      tags: this.config.tags ?? [],
+      summary: this.config.summary ?? "",
+    };
+    if (serviceEndpoint) updateFields["service_endpoint"] = serviceEndpoint;
+    if (openapiUrl) updateFields["openapi_url"] = openapiUrl;
+
+    const tryUpdate = async (): Promise<boolean> => {
       try {
         await updateEntity({
           registryUrl: this.config.registryUrl,
           entityId: this.entityId,
           keypair: this.keypair,
-          fields: {
-            name: this.config.name,
-            entity_url: entityUrl,
-            category: this.config.category,
-            tags: this.config.tags ?? [],
-            summary: this.config.summary ?? "",
-          },
+          fields: updateFields,
         });
         console.log(
           chalk.hex("#8B5CF6")(`[registry] ✓ updated ${this.entityId}`),
         );
+        return true;
       } catch (err) {
         console.log(
           chalk.red(
             `[registry] update failed: ${err instanceof Error ? err.message : String(err)}`,
           ),
         );
+        return false;
       }
+    };
+
+    if (existing) {
+      console.log(chalk.dim(`[registry] ${this._entityType} already registered — updating...`));
+      await tryUpdate();
       return;
     }
 
@@ -245,11 +287,27 @@ export class ZyndBase {
         entityPricing: entityPricing as Record<string, unknown> | undefined,
         developerId: devId,
         developerProof: proof as unknown as Record<string, unknown>,
+        serviceEndpoint,
+        openapiUrl,
       });
       console.log(
         chalk.hex("#8B5CF6")(`[registry] ✓ registered ${registeredId}`),
       );
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Registry race / inconsistency: GET returned 404 so we tried POST,
+      // but POST says the entity_id (or pubkey) is already registered.
+      // Fall back to PUT — same keypair owns it, so the update will be
+      // accepted and the entity reaches the desired state.
+      if (msg.includes("HTTP 409")) {
+        console.log(
+          chalk.yellow(
+            `[registry] register returned 409 (entity already exists at this public key) — falling back to update...`,
+          ),
+        );
+        await tryUpdate();
+        return;
+      }
       console.log(
         chalk.red(
           `[registry] register failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -267,6 +325,21 @@ export class ZyndBase {
     const url = buildEntityUrl(this.config);
     if (url.endsWith("/webhook")) return url.slice(0, -"/webhook".length);
     return url.replace(/\/+$/, "");
+  }
+
+  private isLoopbackUrl(url: string): boolean {
+    try {
+      const host = new URL(url).hostname;
+      return (
+        host === "localhost" ||
+        host === "127.0.0.1" ||
+        host === "0.0.0.0" ||
+        host === "::1" ||
+        host.startsWith("127.")
+      );
+    } catch {
+      return false;
+    }
   }
 
   private resolveRuntimePrice(): string | undefined {
@@ -347,6 +420,15 @@ export class ZyndBase {
 
     ws.on("error", (err: Error) => {
       console.log(chalk.yellow(`[heartbeat] ws error: ${err.message}`));
+      if (err.message.includes("404")) {
+        console.log(
+          chalk.yellow(
+            `[heartbeat] hint: 404 means the registry has no record of ${this.entityId}. ` +
+              `Check earlier '[registry]' lines for a registration failure (e.g., missing developer keypair, network error, or HTTP 4xx). ` +
+              `Re-register with 'zynd ${this._entityType} run' or ensure ZyndBase.start() completes successfully before the heartbeat begins.`,
+          ),
+        );
+      }
       // Reconnect handled in close handler — error always precedes close.
     });
 
@@ -368,7 +450,12 @@ export class ZyndBase {
 
   private sendHeartbeat(ws: WebSocket): void {
     if (ws.readyState !== WebSocket.OPEN) return;
-    const timestamp = new Date().toISOString();
+    // Second-precision UTC ISO-8601 ("YYYY-MM-DDTHH:MM:SSZ") — matches Python
+    // SDK's `time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())`. The registry
+    // verifies the Ed25519 signature over the exact timestamp string, so any
+    // millisecond suffix here causes signature mismatch and the registry
+    // closes the WS upgrade with a 4xx.
+    const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
     const signature = sign(
       this.keypair.privateKeyBytes,
       new TextEncoder().encode(timestamp),

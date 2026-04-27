@@ -4,13 +4,10 @@ import type { ServiceConfig } from "./types.js";
 import type { AgentMessage } from "./message.js";
 
 export class ZyndService extends ZyndBase {
-  protected override _entityLabel = "ZYND SERVICE";
-  protected override _entityType = "service";
-
   private handlerFn: ((input: string) => string | Promise<string>) | null = null;
 
   constructor(config: ServiceConfig, validation?: ValidationOptions) {
-    super(config, validation);
+    super(config, validation, "service", "ZYND SERVICE");
   }
 
   setHandler(fn: (input: string) => string | Promise<string>): void {

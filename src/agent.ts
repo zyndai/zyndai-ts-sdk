@@ -43,15 +43,12 @@ export interface MastraLike {
 }
 
 export class ZyndAIAgent extends ZyndBase {
-  protected override _entityLabel = "ZYND AI AGENT";
-  protected override _entityType = "agent";
-
   private framework: AgentFramework | null = null;
   private executor: unknown = null;
   private customFn: ((input: string) => string | Promise<string>) | null = null;
 
   constructor(config: AgentConfig, validation?: ValidationOptions) {
-    super(config, validation);
+    super(config, validation, "agent", "ZYND AI AGENT");
   }
 
   // ---- Framework setters ----
