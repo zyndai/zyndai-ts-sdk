@@ -45,28 +45,26 @@ export const Attachment = z.object({
 /**
  * Schema for requests to this agent.
  *
- * Starts identical to the default AgentPayload so existing callers keep
- * working. Add your own fields and they'll show up in /.well-known/agent.json
- * automatically.
+ * Default contract: callers send `{ "prompt": "..." }`. Add your own fields
+ * and they'll show up in /.well-known/agent.json automatically.
  *
  * File attachments are opt-in: declare a `z.array(Attachment)` field (any
- * name you like) and the agent will advertise `accepts_files: true`. Without
- * such a field, file support is not offered.
+ * name you like) and the agent will advertise `accepts_files: true`.
  */
 export const RequestPayload = z.object({
-  content: z.string().optional(),
-}).passthrough();
+  prompt: z.string(),
+});
 
 /**
  * Schema for responses this agent sends back.
  *
- * Starts permissive (`.passthrough()`, no required fields) so handlers that
- * return arbitrary dicts keep working. Tighten it by adding required fields
- * once your response shape is stable — the SDK will then validate every
- * response against this model before shipping it, catching handler bugs with
- * a clear error instead of surprising callers.
+ * Default contract: handler returns `{ "response": "..." }`. Tighten or
+ * extend this once your response shape is stable — the SDK validates every
+ * response against this model before shipping it.
  */
-export const ResponsePayload = z.object({}).passthrough();
+export const ResponsePayload = z.object({
+  response: z.string(),
+});
 
 export type RequestPayloadT = z.infer<typeof RequestPayload>;
 export type ResponsePayloadT = z.infer<typeof ResponsePayload>;

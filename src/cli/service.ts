@@ -12,6 +12,12 @@ import {
   type Language,
 } from "../templates/frameworks.js";
 import { pickOption, promptText } from "./prompts.js";
+import {
+  writeGitignore,
+  writeTsConfig,
+  writeTsPackageJson,
+} from "./scaffold-ts.js";
+import { scaffoldIdentity } from "./scaffold-identity.js";
 
 function templatesDir(): string {
   const here =
@@ -83,11 +89,10 @@ export function registerServiceCommand(program: Command): void {
 
       const ext = entryExtension(lang);
 
-      // TS: .service/service.json + service.ts + payload.ts
-      // Py: service.config.json + service.py + payload.py
-      const configDir = lang === "ts" ? path.join(cwd, ".service") : cwd;
-      const configFileName = lang === "ts" ? "service.json" : "service.config.json";
-      const configFilePath = path.join(configDir, configFileName);
+      // Project layout (matches Python `zynd_cli`):
+      //   service.config.json + service.{ts,py} + payload.{ts,py} + .well-known/
+      // Keypair lives under ~/.zynd/services/<slug>/keypair.json.
+      const configFilePath = path.join(cwd, "service.config.json");
       const entryFile = path.join(cwd, `service.${ext}`);
       const payloadFile = path.join(cwd, `payload.${ext}`);
 
@@ -101,7 +106,17 @@ export function registerServiceCommand(program: Command): void {
         return;
       }
 
-      if (lang === "ts") fs.mkdirSync(configDir, { recursive: true });
+      // Generate (or reuse) Ed25519 keypair under ~/.zynd/.
+      let identity: ReturnType<typeof scaffoldIdentity>;
+      try {
+        identity = scaffoldIdentity({ name, entityType: "service" });
+      } catch (err) {
+        console.error(
+          chalk.red(err instanceof Error ? err.message : String(err)),
+        );
+        process.exitCode = 1;
+        return;
+      }
 
       const serviceJson = {
         name,
@@ -112,18 +127,19 @@ export function registerServiceCommand(program: Command): void {
         summary: "",
         registry_url: "https://dns01.zynd.ai",
         webhook_port: 5000,
+        entity_index: identity.derivationIndex,
       };
 
       fs.writeFileSync(configFilePath, JSON.stringify(serviceJson, null, 2));
 
-      // .env scaffold.
+      // .env scaffold. Keypair path is absolute — file lives outside the project.
       const envPath = path.join(cwd, ".env");
       if (!fs.existsSync(envPath)) {
         fs.writeFileSync(
           envPath,
           [
+            `ZYND_SERVICE_KEYPAIR_PATH=${identity.keypairPath}`,
             `ZYND_REGISTRY_URL=https://dns01.zynd.ai`,
-            `# ZYND_SERVICE_KEYPAIR_PATH=./keypair.json`,
             "",
           ].join("\n"),
         );
@@ -155,6 +171,20 @@ export function registerServiceCommand(program: Command): void {
         );
       }
 
+      // TS-only project files.
+      let pkgWritten = false;
+      if (lang === "ts") {
+        pkgWritten = writeTsPackageJson({
+          cwd,
+          name,
+          deps: ["zyndai"],
+          entryFile: `service.${ext}`,
+          runCommand: "zynd service run",
+        });
+        writeTsConfig(cwd);
+        writeGitignore(cwd);
+      }
+
       console.log();
       console.log(chalk.green(`Service "${name}" scaffolded (${LANGUAGE_LABELS[lang]}).`));
       console.log();
@@ -163,11 +193,24 @@ export function registerServiceCommand(program: Command): void {
       console.log(`  ${chalk.dim("Entry")}       service.${ext}`);
       console.log(`  ${chalk.dim("Payload")}     payload.${ext}`);
       console.log(`  ${chalk.dim("Env")}         .env`);
+      console.log(
+        `  ${chalk.dim("Keypair")}     ${identity.keypairPath}${identity.reusedExisting ? chalk.dim(" (reused)") : ""}`,
+      );
+      console.log(
+        `  ${chalk.dim("Entity ID")}   ${chalk.hex("#06B6D4")(identity.entityId)}`,
+      );
+      console.log(
+        `  ${chalk.dim("Derived")}     from developer key (index ${identity.derivationIndex})`,
+      );
       console.log();
       console.log(chalk.bold("  Next steps:"));
-      console.log(
-        `    1. Install deps: ${chalk.cyan(lang === "ts" ? "npm install zyndai" : "pip install zyndai-agent")}`,
-      );
+      const installCmd =
+        lang === "ts"
+          ? pkgWritten
+            ? "npm install"
+            : "npm install zyndai"
+          : "pip install zyndai-agent";
+      console.log(`    1. Install deps: ${chalk.cyan(installCmd)}`);
       console.log(`    2. Edit service.${ext}`);
       console.log(`    3. Run: ${chalk.cyan("zynd service run")}`);
     });
@@ -179,18 +222,18 @@ export function registerServiceCommand(program: Command): void {
     .action(async (opts: { port?: number }) => {
       const cwd = process.cwd();
 
-      const tsConfigPath = path.join(cwd, ".service", "service.json");
-      const pyConfigPath = path.join(cwd, "service.config.json");
-      const configPath = fs.existsSync(tsConfigPath)
-        ? tsConfigPath
-        : fs.existsSync(pyConfigPath)
-          ? pyConfigPath
+      const newConfigPath = path.join(cwd, "service.config.json");
+      const legacyConfigPath = path.join(cwd, ".service", "service.json");
+      const configPath = fs.existsSync(newConfigPath)
+        ? newConfigPath
+        : fs.existsSync(legacyConfigPath)
+          ? legacyConfigPath
           : null;
 
       if (!configPath) {
         console.error(
           chalk.red(
-            "No service config found (.service/service.json or service.config.json). Run: zynd service init",
+            "No service.config.json found in current directory. Run: zynd service init",
           ),
         );
         process.exitCode = 1;
@@ -253,7 +296,6 @@ export function registerServiceCommand(program: Command): void {
           registryUrl:
             (raw["registry_url"] as string) ?? "https://dns01.zynd.ai",
           webhookPort: port,
-          configDir: ".service",
         });
         const svc = new ZyndService(config);
         svc.setHandler((input: string) => `Service echo: ${input}`);

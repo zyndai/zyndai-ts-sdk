@@ -60,15 +60,25 @@ export { X402PaymentProcessor } from "./payment.js";
 
 export { ConfigManager, buildEntityUrl } from "./config-manager.js";
 
-export { WebhookCommunicationManager } from "./webhook.js";
+export {
+  WebhookCommunicationManager,
+  DEFAULT_MAX_FILE_SIZE_BYTES,
+} from "./webhook.js";
+export type { WebhookOptions, MessageHandler } from "./webhook.js";
 
 export { ZyndBase } from "./base.js";
+export type { ValidationOptions } from "./base.js";
 
 export { ZyndAIAgent } from "./agent.js";
 
 export { ZyndService } from "./service.js";
 
+export {
+  zodToAdvertisedJsonSchema,
+  zodSchemaAdvertisement,
+} from "./payload-schema.js";
+
 export { encryptMessage, decryptMessage } from "./crypto.js";
 export type { EncryptedMessage } from "./crypto.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";

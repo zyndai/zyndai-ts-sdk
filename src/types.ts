@@ -32,18 +32,18 @@ export const ZyndBaseConfigSchema = z.object({
       base_price_usd: z.number(),
       currency: z.string().default("USDC"),
     })
-    .optional(),
+    .nullish()
+    .transform((v) => v ?? undefined),
   keypairPath: z.string().optional(),
   configDir: z.string().optional(),
   cardOutput: z.string().optional(),
+  developerKeypairPath: z.string().optional(),
+  entityIndex: z.number().int().optional(),
 });
 
 export type ZyndBaseConfig = z.infer<typeof ZyndBaseConfigSchema>;
 
-export const AgentConfigSchema = ZyndBaseConfigSchema.extend({
-  developerKeypairPath: z.string().optional(),
-  entityIndex: z.number().int().optional(),
-});
+export const AgentConfigSchema = ZyndBaseConfigSchema.extend({});
 
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 
@@ -127,6 +127,17 @@ export interface EntityCard {
   category?: string;
   tags?: string[];
   summary?: string;
+  /**
+   * JSON Schema for request payloads accepted at /webhook and /webhook/sync.
+   * Emitted when the SDK is constructed with a payloadModel; omitted otherwise.
+   * Callers can use this to generate type-safe clients without reading the
+   * agent's source. Matches the Python SDK's `input_schema` field.
+   */
+  input_schema?: Record<string, unknown>;
+  /** JSON Schema for responses the agent/service emits. Matches `output_schema` in the Python SDK. */
+  output_schema?: Record<string, unknown>;
+  /** True when RequestPayload declares a `z.array(Attachment)` field, so callers know file upload is accepted. */
+  accepts_files?: boolean;
   last_heartbeat: string;
   signed_at: string;
   signature?: string;

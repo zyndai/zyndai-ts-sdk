@@ -65,10 +65,15 @@ async function main() {
       process.env.ZYND_AGENT_KEYPAIR_PATH ?? _config.keypair_path,
     entityUrl: process.env.ZYND_ENTITY_URL ?? _config.entity_url,
     price: _config.price,
-    entityPricing: _config.entity_pricing,
+    entityPricing: _config.entity_pricing ?? undefined,
+    entityIndex: _config.entity_index ?? 0,
   });
 
-  const zyndAgent = new ZyndAIAgent(agentConfig);
+  const zyndAgent = new ZyndAIAgent(agentConfig, {
+    payloadModel: RequestPayload,
+    outputModel: ResponsePayload,
+    maxFileSizeBytes: MAX_FILE_SIZE_BYTES,
+  });
   const mastraAgent = createAgent();
   zyndAgent.setMastraAgent(mastraAgent as any);
 
@@ -93,13 +98,14 @@ async function main() {
   process.stdin.on("data", (buf) => {
     if (buf.toString().trim().toLowerCase() === "exit") process.exit(0);
   });
-
-  void RequestPayload;
-  void ResponsePayload;
-  void MAX_FILE_SIZE_BYTES;
 }
 
 main().catch((err) => {
-  console.error(err);
+  if (err instanceof Error) {
+    console.error(`Error: ${err.message}`);
+    if (err.stack) console.error(err.stack);
+  } else {
+    console.error(`Error: ${String(err)}`);
+  }
   process.exit(1);
 });

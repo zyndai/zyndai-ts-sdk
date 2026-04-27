@@ -10,7 +10,7 @@
 
 import "dotenv/config";
 import * as fs from "node:fs";
-import { ZyndService, ServiceConfigSchema } from "zyndai";
+import { ZyndService, ServiceConfigSchema, AgentMessage } from "zyndai";
 
 import { RequestPayload, ResponsePayload, MAX_FILE_SIZE_BYTES } from "./payload.js";
 
@@ -21,9 +21,8 @@ const _config: Record<string, any> = fs.existsSync("service.config.json")
 /**
  * Your service logic here.
  *
- * This function is called for every incoming request. It receives the request
- * content as a string and should return the response as a string.
- *
+ * Default contract per payload.ts: input is the `prompt` field as a string;
+ * return value is wrapped into `{ response }` to match `ResponsePayload`.
  * Replace this with your own implementation.
  */
 async function handleRequest(input: string): Promise<string> {
@@ -50,11 +49,28 @@ async function main() {
       process.env.ZYND_SERVICE_KEYPAIR_PATH ?? _config.keypair_path,
     entityUrl: process.env.ZYND_ENTITY_URL ?? _config.entity_url,
     price: _config.price,
-    entityPricing: _config.entity_pricing,
+    entityPricing: _config.entity_pricing ?? undefined,
+    entityIndex: _config.entity_index ?? 0,
   });
 
-  const service = new ZyndService(config);
-  service.setHandler(handleRequest);
+  const service = new ZyndService(config, {
+    payloadModel: RequestPayload,
+    outputModel: ResponsePayload,
+    maxFileSizeBytes: MAX_FILE_SIZE_BYTES,
+  });
+
+  service.webhook.addMessageHandler(async (message: AgentMessage) => {
+    try {
+      const response = await handleRequest(message.content);
+      service.webhook.setResponse(message.messageId, response);
+    } catch (e) {
+      service.webhook.setResponse(
+        message.messageId,
+        `Error: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  });
+
   await service.start();
 
   console.log(`\n__SERVICE_NAME__ is running`);
@@ -64,13 +80,14 @@ async function main() {
   process.stdin.on("data", (buf) => {
     if (buf.toString().trim().toLowerCase() === "exit") process.exit(0);
   });
-
-  void RequestPayload;
-  void ResponsePayload;
-  void MAX_FILE_SIZE_BYTES;
 }
 
 main().catch((err) => {
-  console.error(err);
+  if (err instanceof Error) {
+    console.error(`Error: ${err.message}`);
+    if (err.stack) console.error(err.stack);
+  } else {
+    console.error(`Error: ${String(err)}`);
+  }
   process.exit(1);
 });

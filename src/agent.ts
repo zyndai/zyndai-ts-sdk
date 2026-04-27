@@ -1,5 +1,6 @@
 import { AgentFramework } from "./types.js";
 import { ZyndBase } from "./base.js";
+import type { ValidationOptions } from "./base.js";
 import type { AgentConfig } from "./types.js";
 
 // ---- Duck-typed framework shapes ----
@@ -49,8 +50,8 @@ export class ZyndAIAgent extends ZyndBase {
   private executor: unknown = null;
   private customFn: ((input: string) => string | Promise<string>) | null = null;
 
-  constructor(config: AgentConfig) {
-    super(config);
+  constructor(config: AgentConfig, validation?: ValidationOptions) {
+    super(config, validation);
   }
 
   // ---- Framework setters ----

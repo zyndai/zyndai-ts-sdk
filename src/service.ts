@@ -1,4 +1,5 @@
 import { ZyndBase } from "./base.js";
+import type { ValidationOptions } from "./base.js";
 import type { ServiceConfig } from "./types.js";
 import type { AgentMessage } from "./message.js";
 
@@ -8,8 +9,8 @@ export class ZyndService extends ZyndBase {
 
   private handlerFn: ((input: string) => string | Promise<string>) | null = null;
 
-  constructor(config: ServiceConfig) {
-    super(config);
+  constructor(config: ServiceConfig, validation?: ValidationOptions) {
+    super(config, validation);
   }
 
   setHandler(fn: (input: string) => string | Promise<string>): void {

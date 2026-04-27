@@ -14,6 +14,13 @@ import {
   type Language,
 } from "../templates/frameworks.js";
 import { pickOption, promptText } from "./prompts.js";
+import {
+  parseDepsFromInstall,
+  writeGitignore,
+  writeTsConfig,
+  writeTsPackageJson,
+} from "./scaffold-ts.js";
+import { scaffoldIdentity } from "./scaffold-identity.js";
 
 /**
  * Resolve the directory containing bundled .tpl templates.
@@ -117,16 +124,14 @@ export function registerAgentCommand(program: Command): void {
         const fwMeta = FRAMEWORKS_BY_LANG[lang][framework];
         const ext = entryExtension(lang);
 
-        // --- layout decision ---
-        // TS: .agent/agent.json + agent.ts + payload.ts  (current TS convention)
-        // Py: agent.config.json + agent.py + payload.py  (matches Python SDK)
-        const configDir = lang === "ts" ? path.join(cwd, ".agent") : cwd;
-        const configFileName = lang === "ts" ? "agent.json" : "agent.config.json";
-        const configFilePath = path.join(configDir, configFileName);
+        // Project layout (matches Python `zynd_cli`):
+        //   agent.config.json + agent.{ts,py} + payload.{ts,py} + .well-known/
+        // The agent's keypair lives under ~/.zynd/agents/<slug>/keypair.json,
+        // referenced from .env via ZYND_AGENT_KEYPAIR_PATH.
+        const configFilePath = path.join(cwd, "agent.config.json");
         const entryFile = path.join(cwd, `agent.${ext}`);
         const payloadFile = path.join(cwd, `payload.${ext}`);
 
-        // Refuse to overwrite an existing project's config.
         if (fs.existsSync(configFilePath)) {
           console.error(
             chalk.yellow(
@@ -137,7 +142,17 @@ export function registerAgentCommand(program: Command): void {
           return;
         }
 
-        if (lang === "ts") fs.mkdirSync(configDir, { recursive: true });
+        // Generate (or reuse) the agent's Ed25519 keypair under ~/.zynd/.
+        let identity: ReturnType<typeof scaffoldIdentity>;
+        try {
+          identity = scaffoldIdentity({ name, entityType: "agent" });
+        } catch (err) {
+          console.error(
+            chalk.red(err instanceof Error ? err.message : String(err)),
+          );
+          process.exitCode = 1;
+          return;
+        }
 
         const configPayload: Record<string, unknown> = {
           name,
@@ -149,16 +164,17 @@ export function registerAgentCommand(program: Command): void {
           summary: "",
           registry_url: "https://dns01.zynd.ai",
           webhook_port: 5000,
-          entity_pricing: null,
+          entity_index: identity.derivationIndex,
         };
         fs.writeFileSync(configFilePath, JSON.stringify(configPayload, null, 2));
 
-        // .env with registry URL + framework's expected API keys.
+        // .env with registry URL, keypair path, and framework's expected API keys.
+        // Keypair path is absolute — keypair lives outside the project dir.
         const envPath = path.join(cwd, ".env");
         if (!fs.existsSync(envPath)) {
           const envLines = [
+            `ZYND_AGENT_KEYPAIR_PATH=${identity.keypairPath}`,
             `ZYND_REGISTRY_URL=https://dns01.zynd.ai`,
-            `# ZYND_AGENT_KEYPAIR_PATH=./keypair.json`,
             "",
           ];
           for (const key of fwMeta.envKeys) envLines.push(`${key}=`);
@@ -188,6 +204,20 @@ export function registerAgentCommand(program: Command): void {
           );
         }
 
+        // TS-only project files: package.json, tsconfig.json, .gitignore.
+        let pkgWritten = false;
+        if (lang === "ts") {
+          pkgWritten = writeTsPackageJson({
+            cwd,
+            name,
+            deps: parseDepsFromInstall(fwMeta.install),
+            entryFile: `agent.${ext}`,
+            runCommand: "zynd agent run",
+          });
+          writeTsConfig(cwd);
+          writeGitignore(cwd);
+        }
+
         // .well-known placeholder — regenerated on first `zynd agent run`.
         const wellKnownDir = path.join(cwd, ".well-known");
         fs.mkdirSync(wellKnownDir, { recursive: true });
@@ -215,10 +245,24 @@ export function registerAgentCommand(program: Command): void {
         console.log(`  ${chalk.dim("Entry")}       agent.${ext}`);
         console.log(`  ${chalk.dim("Payload")}     payload.${ext}`);
         console.log(`  ${chalk.dim("Env")}         .env`);
+        console.log(
+          `  ${chalk.dim("Keypair")}     ${identity.keypairPath}${identity.reusedExisting ? chalk.dim(" (reused)") : ""}`,
+        );
+        console.log(
+          `  ${chalk.dim("Entity ID")}   ${chalk.hex("#06B6D4")(identity.entityId)}`,
+        );
+        console.log(
+          `  ${chalk.dim("Derived")}     from developer key (index ${identity.derivationIndex})`,
+        );
         console.log();
         console.log(chalk.bold("  Next steps:"));
-        console.log(`    1. Install deps: ${chalk.cyan(fwMeta.install)}`);
-        let step = 2;
+        let step = 1;
+        if (lang === "ts") {
+          const installCmd = pkgWritten ? "npm install" : fwMeta.install;
+          console.log(`    ${step++}. Install deps: ${chalk.cyan(installCmd)}`);
+        } else {
+          console.log(`    ${step++}. Install deps: ${chalk.cyan(fwMeta.install)}`);
+        }
         if (fwMeta.envKeys.length > 0) {
           console.log(`    ${step++}. Add your API keys to ${chalk.cyan(".env")}`);
         }
@@ -233,19 +277,20 @@ export function registerAgentCommand(program: Command): void {
     .action(async (opts: { port?: number }) => {
       const cwd = process.cwd();
 
-      // Config file: TS uses .agent/agent.json, Python uses agent.config.json.
-      const tsConfigPath = path.join(cwd, ".agent", "agent.json");
-      const pyConfigPath = path.join(cwd, "agent.config.json");
-      const configPath = fs.existsSync(tsConfigPath)
-        ? tsConfigPath
-        : fs.existsSync(pyConfigPath)
-          ? pyConfigPath
+      // Project config: agent.config.json in cwd. Older TS layout
+      // (.agent/agent.json) still recognized for backward compatibility.
+      const newConfigPath = path.join(cwd, "agent.config.json");
+      const legacyConfigPath = path.join(cwd, ".agent", "agent.json");
+      const configPath = fs.existsSync(newConfigPath)
+        ? newConfigPath
+        : fs.existsSync(legacyConfigPath)
+          ? legacyConfigPath
           : null;
 
       if (!configPath) {
         console.error(
           chalk.red(
-            "No agent config found (.agent/agent.json or agent.config.json). Run: zynd agent init",
+            "No agent.config.json found in current directory. Run: zynd agent init",
           ),
         );
         process.exitCode = 1;
@@ -308,7 +353,6 @@ export function registerAgentCommand(program: Command): void {
           registryUrl:
             (raw["registry_url"] as string) ?? "https://dns01.zynd.ai",
           webhookPort: port,
-          configDir: ".agent",
         });
         const agentInstance = new ZyndAIAgent(config);
         agentInstance.setCustomAgent((input: string) => `Echo: ${input}`);

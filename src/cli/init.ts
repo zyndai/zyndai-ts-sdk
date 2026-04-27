@@ -2,7 +2,12 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import * as fs from "node:fs";
 import { generateKeypair, generateDeveloperId, saveKeypair } from "../identity.js";
-import { ensureZyndDir, developerKeyPath } from "./config.js";
+import {
+  ensureZyndDir,
+  developerKeyPath,
+  saveCliConfig,
+  getRegistryUrl,
+} from "./config.js";
 
 export function registerInitCommand(program: Command): void {
   program
@@ -22,6 +27,9 @@ export function registerInitCommand(program: Command): void {
       ensureZyndDir();
       const kp = generateKeypair();
       saveKeypair(kp, keyPath);
+
+      // Persist default registry URL so subsequent commands have a config baseline.
+      saveCliConfig({ registry_url: getRegistryUrl() });
 
       const devId = generateDeveloperId(kp.publicKeyBytes);
 

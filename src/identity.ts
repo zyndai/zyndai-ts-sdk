@@ -3,6 +3,21 @@ import { sha256 } from "@noble/hashes/sha256";
 import { sha512 } from "@noble/hashes/sha512";
 import { bytesToHex } from "@noble/hashes/utils";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+/**
+ * Resolve the developer keypair path. Order:
+ *   1. ZYND_DEVELOPER_KEYPAIR_PATH env var
+ *   2. ZYND_HOME/developer.json
+ *   3. ~/.zynd/developer.json
+ */
+export function defaultDeveloperKeyPath(): string {
+  const envPath = process.env["ZYND_DEVELOPER_KEYPAIR_PATH"];
+  if (envPath) return envPath;
+  const home = process.env["ZYND_HOME"] ?? path.join(os.homedir(), ".zynd");
+  return path.join(home, "developer.json");
+}
 
 function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");

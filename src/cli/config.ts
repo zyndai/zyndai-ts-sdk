@@ -11,6 +11,8 @@ export function zyndDir(): string {
 export function ensureZyndDir(): string {
   const dir = zyndDir();
   fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(path.join(dir, "agents"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "services"), { recursive: true });
   return dir;
 }
 
@@ -24,6 +26,31 @@ export function agentsDir(): string {
 
 export function servicesDir(): string {
   return path.join(zyndDir(), "services");
+}
+
+/** Slugify an entity name to match Python: lowercase, spaces → hyphens. */
+export function slugifyEntityName(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, "-");
+}
+
+/** Path to ~/.zynd/agents/<slug>/ for a named agent. */
+export function agentDir(name: string): string {
+  return path.join(agentsDir(), slugifyEntityName(name));
+}
+
+/** Path to ~/.zynd/agents/<slug>/keypair.json. */
+export function agentKeypairPath(name: string): string {
+  return path.join(agentDir(name), "keypair.json");
+}
+
+/** Path to ~/.zynd/services/<slug>/. */
+export function serviceDir(name: string): string {
+  return path.join(servicesDir(), slugifyEntityName(name));
+}
+
+/** Path to ~/.zynd/services/<slug>/keypair.json. */
+export function serviceKeypairPath(name: string): string {
+  return path.join(serviceDir(name), "keypair.json");
 }
 
 export function cliConfigPath(): string {
