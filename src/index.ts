@@ -81,4 +81,4 @@ export {
 export { encryptMessage, decryptMessage } from "./crypto.js";
 export type { EncryptedMessage } from "./crypto.js";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.2.1";

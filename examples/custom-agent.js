@@ -1,21 +1,26 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-var index_js_1 = require("../src/index.js");
-var config = {
+// Run with: node examples/custom-agent.js  (after `pnpm build`)
+//   or:    npx tsx examples/custom-agent.ts
+const { ZyndAIAgent } = require("../dist/index.js");
+
+(async () => {
+  const agent = new ZyndAIAgent({
     name: "Echo Agent",
     description: "Echoes back whatever you send",
     capabilities: { text: ["echo"] },
-    registryUrl: "https://registry.zynd.ai",
     webhookPort: 5001,
     price: "$0.01",
-};
-var agent = new index_js_1.ZyndAIAgent(config);
-agent.setCustomAgent(function (input) {
-    return "Echo: ".concat(input);
-});
-agent.webhook.addMessageHandler(function (msg) {
-    var result = "Echo: ".concat(msg.content);
+  });
+
+  agent.setCustomAgent((input) => `Echo: ${input}`);
+
+  agent.webhook.addMessageHandler(async (msg) => {
+    const result = await agent.invoke(msg.content);
     agent.webhook.setResponse(msg.messageId, result);
+  });
+
+  await agent.start();
+  console.log("Agent running. Press Ctrl+C to stop.");
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });
-await agent.start();
-console.log("Agent running. Press Ctrl+C to stop.");
