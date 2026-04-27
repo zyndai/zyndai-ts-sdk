@@ -1,10 +1,11 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-var index_js_1 = require("../src/index.js");
-var kp = (0, index_js_1.generateKeypair)();
-var processor = new index_js_1.X402PaymentProcessor({
-    ed25519PrivateKeyBytes: kp.privateKeyBytes,
+// Run with: node examples/x402-payment.js  (after `pnpm build`)
+const { X402PaymentProcessor, generateKeypair } = require("../dist/index.js");
+
+const kp = generateKeypair();
+const processor = new X402PaymentProcessor({
+  ed25519PrivateKeyBytes: kp.privateKeyBytes,
 });
+
 console.log("ETH Address:", processor.address);
 console.log("Entity ID:", kp.entityId);
 console.log("Public Key:", kp.publicKeyString);
