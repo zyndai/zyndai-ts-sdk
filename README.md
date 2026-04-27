@@ -107,9 +107,10 @@ const service = new ZyndService({
   description: "Converts text to uppercase",
   capabilities: { text: ["transform"] },
   webhookPort: 5000,
-  entityUrl: "https://your-public-domain.com", // must be reachable
+  entityUrl: "https://your-public-domain.com", // must be reachable; also used as service_endpoint by default
   registryUrl: "https://dns01.zynd.ai",
   keypairPath: process.env.ZYND_SERVICE_KEYPAIR_PATH,
+  // serviceEndpoint: "https://tunnel.example.com",  // only needed when the registry should publish a different URL than entityUrl
 });
 
 service.setHandler((input) => input.toUpperCase());
@@ -213,7 +214,7 @@ console.log(data.response);
 
 | Field | Type | Description |
 |---|---|---|
-| `serviceEndpoint` | `string` | Service API endpoint (informational, advertised on entity card) |
+| `serviceEndpoint` | `string` | URL advertised to the registry as the service's callable endpoint. Defaults to `entityUrl` — set this only when the registry should publish a different URL (e.g., an ngrok tunnel while `webhookHost` is bound locally). |
 | `openapiUrl` | `string` | OpenAPI spec URL (informational) |
 
 ### Payload validation
@@ -269,6 +270,8 @@ service:   zns:svc:<sha256(pubkey)[0:16].hex>
 developer: zns:dev:<sha256(pubkey)[0:16].hex>
 ```
 
+The `svc:` infix is not cosmetic — the registry treats `zns:<hex>` and `zns:svc:<hex>` as distinct namespaces. The same Ed25519 keypair will produce different entity IDs depending on whether it is loaded into a `ZyndAIAgent` or a `ZyndService`. If you see a service registered under a bare `zns:<hex>` ID, it was registered with an older build; delete the entry and re-register with the current SDK.
+
 You can derive multiple entity keys from one developer key (HD derivation):
 
 ```ts
@@ -295,14 +298,51 @@ wss://dns01.zynd.ai/v1/entities/<entity_id>/ws
 Every **30 seconds** it sends a signed ping:
 
 ```json
-{ "timestamp": "2026-04-27T12:00:00.000Z", "signature": "ed25519:..." }
+{ "timestamp": "2026-04-27T12:00:00Z", "signature": "ed25519:..." }
 ```
 
+The timestamp is second-precision UTC (`YYYY-MM-DDTHH:MM:SSZ` — no milliseconds). The registry's ISO parser and the Python SDK both require this format; a millisecond suffix causes signature mismatch and the registry closes the connection. The SDK strips the milliseconds automatically via `new Date().toISOString().replace(/\.\d{3}Z$/, "Z")`.
+
 The timestamp is signed with the entity's private key. The registry uses this to determine liveness. If the connection drops, the SDK reconnects automatically after 5 seconds (configurable via `autoReconnect`).
+
+### How registration works
+
+`start()` runs a single upsert against the registry, in this order:
+
+1. `GET /v1/entities/<entity_id>` — if the entity exists, skip to step 4.
+2. `POST /v1/entities` — register the entity.
+3. If step 2 returns `HTTP 409` (entity already registered at this public key, e.g. a registry race on restart), fall back to step 4.
+4. `PUT /v1/entities/<entity_id>` — update the entity record with the current config.
+
+This makes `start()` idempotent. Restarting the process, redeploying, or running against a registry that already has a record for this keypair all converge to the same outcome: the entity's record reflects the latest config.
+
+If the developer keypair (`~/.zynd/developer.json`) is absent, registration is skipped with a warning and the webhook + heartbeat still start. This allows containerized deployments that ship only the entity keypair.
+
+### service_endpoint
+
+The ZyndAI registry requires a `service_endpoint` field when registering a `ZyndService`. The SDK defaults it to the entity's public URL (`entityUrl`) automatically — you do not need to set it.
+
+Set `serviceEndpoint` explicitly only when you want the registry to advertise a URL that differs from the SDK's local webhook URL. The typical case is a tunnel during local development:
+
+```ts
+const service = new ZyndService({
+  name: "text-transform",
+  webhookHost: "0.0.0.0",   // binds locally
+  webhookPort: 5000,
+  entityUrl: "http://localhost:5000",  // SDK uses this as its base
+  serviceEndpoint: "https://abc123.ngrok.io",  // what the registry publishes
+  registryUrl: "https://dns01.zynd.ai",
+  keypairPath: process.env.ZYND_SERVICE_KEYPAIR_PATH,
+});
+```
+
+In production, where `entityUrl` is already a public domain, omit `serviceEndpoint` entirely.
 
 ### Webhook
 
 `agent.start()` binds an Express server on `webhookPort` (default 5000). The ZyndAI Network sends messages to this server. **The URL registered with the network must be publicly reachable from the internet — `localhost` will not work.**
+
+When `entity_url` resolves to a loopback address (`localhost`, `127.x.x.x`, `0.0.0.0`, `::1`), the SDK logs a yellow warning at startup. It still registers and runs — the warning is a reminder, not a hard stop.
 
 **Local development:** use a tunnel.
 
@@ -536,9 +576,10 @@ Python templates are scaffolded by this CLI but executed by the [Python SDK](htt
 This SDK is wire-compatible with [`zyndai-agent`](https://github.com/zyndai/zyndai-agent) (Python):
 
 - Same Ed25519 signing format (`ed25519:<base64>`)
-- Same entity ID derivation (`SHA-256` first 16 bytes)
+- Same entity ID derivation (`SHA-256` first 16 bytes, with `zns:svc:` prefix for services)
 - Same HD key derivation (`SHA-512`)
 - Same registry API (signed registration, search, heartbeat)
+- Same heartbeat timestamp format: second-precision UTC (`YYYY-MM-DDTHH:MM:SSZ`), matching Python's `time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())`
 - Same `AgentMessage` protocol (snake_case JSON with `content`/`prompt` dual fields)
 - Same entity card format and signature scheme
 - Same X25519-AES256-GCM encryption

@@ -32,10 +32,10 @@
 
 - `index.ts` — Public API barrel: re-exports all classes, types, functions, and `VERSION = "0.2.0"`
 - `types.ts` — Zod schemas (`ZyndBaseConfigSchema`, `AgentConfigSchema`, `ServiceConfigSchema`) and TS interfaces (`EntityCard`, `AgentMessage`, `SearchResult`, `DerivationProof`, `AgentFramework` enum)
-- `base.ts` — `ZyndBase` class: shared constructor, keypair resolution, heartbeat WebSocket (30s signed pings via `ws`), registry register/update on `start()`, card serving, x402 setup; `ValidationOptions` interface
+- `base.ts` — `ZyndBase` class: shared constructor (accepts `entityType` explicitly so subclass field initializers don't race), keypair resolution, heartbeat WebSocket (30s signed pings, second-precision timestamps `YYYY-MM-DDTHH:MM:SSZ`), registry upsert on `start()` (`getEntity` → register → 409 fallback to update), loopback URL warning, card serving, x402 setup; `ValidationOptions` interface
 - `agent.ts` — `ZyndAIAgent extends ZyndBase`: framework setters (`setLangchainAgent`, `setLanggraphAgent`, `setCrewAgent`, `setPydanticAiAgent`, `setVercelAiAgent`, `setMastraAgent`, `setCustomAgent`), `invoke()` dispatcher with duck-typed interfaces for each framework
 - `service.ts` — `ZyndService extends ZyndBase`: `setHandler(fn)` wires fn into webhook message handler; `invoke(inputText)` calls fn directly
-- `identity.ts` — `Ed25519Keypair` class, `generateKeypair`, `loadKeypair`, `saveKeypair`, `generateEntityId` (`zns:<sha256[:16].hex>`), `generateDeveloperId` (`zns:dev:…`), `sign`, `verify`, `deriveAgentKeypair` (SHA-512, prefix `"zns:agent:"`), `createDerivationProof`, `verifyDerivationProof`; keypair path resolution priority
+- `identity.ts` — `Ed25519Keypair` class, `generateKeypair`, `loadKeypair`, `saveKeypair`, `generateEntityId(pubKey, entityType)` — returns `zns:<sha256[:16].hex>` for agents, `zns:svc:<sha256[:16].hex>` for services, `generateDeveloperId` (`zns:dev:…`), `sign`, `verify`, `deriveAgentKeypair` (SHA-512, prefix `"zns:agent:"`), `createDerivationProof`, `verifyDerivationProof`; keypair path resolution priority
 - `webhook.ts` — `WebhookCommunicationManager`: Express server with `/webhook` (async), `/webhook/sync` (30s timeout), `/health`, `/.well-known/agent.json`; Zod `payloadModel`/`outputModel` validation; x402 middleware; `DEFAULT_MAX_FILE_SIZE_BYTES = 25 MiB`
 - `registry.ts` — `DNSRegistryClient` namespace: `registerEntity`, `updateEntity`, `deleteEntity`, `getEntity`, `getEntityCard`, `searchEntities`, `resolveEntity`; signs requests with Ed25519; `canonicalJson` (sorted keys, matches Go `encoding/json`)
 - `search.ts` — `SearchAndDiscoveryManager` class wrapping `registry.searchEntities` with camelCase API
@@ -127,14 +127,14 @@ All tests use **vitest**. Import from `src/` directly.
 **Run:**
 1. Spawn `npx tsx agent.ts` or `python3 agent.py`
 2. Poll `/health`
-3. `registerEntity` or `updateEntity` with derivation proof
+3. Upsert on registry: `getEntity` → if found, `updateEntity`; if not, `registerEntity`; if register returns 409, fall back to `updateEntity`
 4. Heartbeat in `ZyndBase.start()`
 
 **Webhook / invoke:**
 1. `POST /webhook/sync` → Zod validate → fire `MessageHandler` → `invoke()` → framework dispatch → `setResponse()` → `200`
 
 **Heartbeat:**
-- `ZyndBase` opens WS to `registryUrl/v1/entities/{id}/ws`; sends signed timestamp every 30s; reconnects after 5s
+- `ZyndBase` opens WS to `registryUrl/v1/entities/{id}/ws`; sends signed second-precision timestamp (`YYYY-MM-DDTHH:MM:SSZ`) every 30s; reconnects after 5s
 
 ---
 
