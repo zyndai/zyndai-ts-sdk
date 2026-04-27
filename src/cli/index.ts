@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { version as pkgVersion } from "../../package.json";
 import { registerInitCommand } from "./init.js";
 import { registerKeysCommand } from "./keys.js";
 import { registerSearchCommand } from "./search.js";
@@ -17,7 +18,7 @@ const program = new Command();
 program
   .name("zynd")
   .description("ZyndAI Agent SDK CLI")
-  .version("0.1.0")
+  .version(pkgVersion)
   .option("--registry <url>", "Registry URL override");
 
 registerInitCommand(program);
