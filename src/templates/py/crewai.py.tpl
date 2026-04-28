@@ -16,6 +16,7 @@ from payload import RequestPayload, ResponsePayload, MAX_FILE_SIZE_BYTES
 from dotenv import load_dotenv
 import json
 import os
+import sys
 
 load_dotenv()
 
@@ -107,9 +108,16 @@ if __name__ == "__main__":
 
     print(f"\n__AGENT_NAME__ is running (CrewAI)")
     print(f"Webhook: {zynd_agent.webhook_url}")
-    print("Type 'exit' to quit\n")
 
-    while True:
-        cmd = input()
-        if cmd.lower() == "exit":
-            break
+    if sys.stdin.isatty():
+        print("Type 'exit' to quit\n")
+        while True:
+            try:
+                cmd = input()
+            except EOFError:
+                break
+            if cmd.lower() == "exit":
+                break
+    else:
+        import signal
+        signal.pause()

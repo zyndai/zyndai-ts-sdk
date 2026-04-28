@@ -75,11 +75,18 @@ async function main() {
 
   console.log(`\n__SERVICE_NAME__ is running`);
   console.log(`Webhook: ${service.webhookUrl}`);
-  console.log("Type 'exit' to quit\n");
 
-  process.stdin.on("data", (buf) => {
-    if (buf.toString().trim().toLowerCase() === "exit") process.exit(0);
-  });
+  process.on("SIGTERM", () => process.exit(0));
+  process.on("SIGINT", () => process.exit(0));
+
+  if (process.stdin.isTTY) {
+    console.log("Type 'exit' to quit\n");
+    process.stdin.on("data", (buf) => {
+      if (buf.toString().trim().toLowerCase() === "exit") process.exit(0);
+    });
+  } else {
+    await new Promise<never>(() => {});
+  }
 }
 
 main().catch((err) => {
