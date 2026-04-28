@@ -36,6 +36,40 @@ function slugifyName(name: string, shortSuffix = ""): string {
 }
 
 /**
+ * Compute a sparse diff between what the registry currently has and what we
+ * want to set. Returns only the fields whose values differ so that
+ * upsertOnRegistry() can skip the PUT entirely when nothing changed.
+ *
+ * Tags comparison: null / undefined / [] are all treated as "no tags" so a
+ * freshly-registered entity with an empty tag list never triggers a spurious
+ * update just because the registry returns `null` while local config has `[]`.
+ */
+function computeUpdateDiff(
+  existing: Record<string, unknown>,
+  desired: Record<string, unknown>,
+): Record<string, unknown> {
+  const diff: Record<string, unknown> = {};
+  for (const key of Object.keys(desired)) {
+    const want = desired[key];
+    const have = existing[key];
+
+    if (key === "tags") {
+      // Normalise: null / undefined / [] all mean "empty tag list"
+      const wantTags = (Array.isArray(want) && want.length > 0) ? want : [];
+      const haveTags = (Array.isArray(have) && have.length > 0) ? have : [];
+      if (JSON.stringify(wantTags) !== JSON.stringify(haveTags)) {
+        diff[key] = want;
+      }
+    } else {
+      if (JSON.stringify(want) !== JSON.stringify(have ?? null)) {
+        diff[key] = want;
+      }
+    }
+  }
+  return diff;
+}
+
+/**
  * Runtime payload validation options. The TS analog of
  * (payload_model=, output_model=, max_file_size_bytes=) from the Python
  * SDK's ZyndAIAgent/ZyndService constructors.
@@ -234,17 +268,17 @@ export class ZyndBase {
       return;
     }
 
-    const updateFields: Record<string, unknown> = {
+    const desiredFields: Record<string, unknown> = {
       name: this.config.name,
       entity_url: entityUrl,
       category: this.config.category,
       tags: this.config.tags ?? [],
       summary: this.config.summary ?? "",
     };
-    if (serviceEndpoint) updateFields["service_endpoint"] = serviceEndpoint;
-    if (openapiUrl) updateFields["openapi_url"] = openapiUrl;
+    if (serviceEndpoint) desiredFields["service_endpoint"] = serviceEndpoint;
+    if (openapiUrl) desiredFields["openapi_url"] = openapiUrl;
 
-    const tryUpdate = async (): Promise<boolean> => {
+    const tryUpdate = async (updateFields: Record<string, unknown>): Promise<boolean> => {
       try {
         await updateEntity({
           registryUrl: this.config.registryUrl,
@@ -252,8 +286,9 @@ export class ZyndBase {
           keypair: this.keypair,
           fields: updateFields,
         });
+        const changedKeys = Object.keys(updateFields).join(", ");
         console.log(
-          chalk.hex("#8B5CF6")(`[registry] ✓ updated ${this.entityId}`),
+          chalk.hex("#8B5CF6")(`[registry] ✓ updated ${this.entityId} (${changedKeys})`),
         );
         return true;
       } catch (err) {
@@ -267,8 +302,13 @@ export class ZyndBase {
     };
 
     if (existing) {
-      console.log(chalk.dim(`[registry] ${this._entityType} already registered — updating...`));
-      await tryUpdate();
+      console.log(chalk.dim(`[registry] ${this._entityType} already registered — checking for changes...`));
+      const diff = computeUpdateDiff(existing, desiredFields);
+      if (Object.keys(diff).length === 0) {
+        console.log(chalk.hex("#8B5CF6").dim(`[registry] no changes — skipping update`));
+        return;
+      }
+      await tryUpdate(diff);
       return;
     }
 
@@ -305,7 +345,7 @@ export class ZyndBase {
             `[registry] register returned 409 (entity already exists at this public key) — falling back to update...`,
           ),
         );
-        await tryUpdate();
+        await tryUpdate(desiredFields);
         return;
       }
       console.log(
