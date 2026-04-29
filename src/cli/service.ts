@@ -125,7 +125,7 @@ export function registerServiceCommand(program: Command): void {
         category: "general",
         tags: [],
         summary: "",
-        registry_url: "https://dns01.zynd.ai",
+        registry_url: "https://zns01.zynd.ai",
         webhook_port: 5000,
         entity_index: identity.derivationIndex,
       };
@@ -139,7 +139,7 @@ export function registerServiceCommand(program: Command): void {
           envPath,
           [
             `ZYND_SERVICE_KEYPAIR_PATH=${identity.keypairPath}`,
-            `ZYND_REGISTRY_URL=https://dns01.zynd.ai`,
+            `ZYND_REGISTRY_URL=https://zns01.zynd.ai`,
             "",
           ].join("\n"),
         );
@@ -294,7 +294,7 @@ export function registerServiceCommand(program: Command): void {
           category: (raw["category"] as string) ?? "general",
           tags: (raw["tags"] as string[]) ?? [],
           registryUrl:
-            (raw["registry_url"] as string) ?? "https://dns01.zynd.ai",
+            (raw["registry_url"] as string) ?? "https://zns01.zynd.ai",
           webhookPort: port,
         });
         const svc = new ZyndService(config);

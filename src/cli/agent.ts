@@ -162,7 +162,7 @@ export function registerAgentCommand(program: Command): void {
           category: "general",
           tags: [],
           summary: "",
-          registry_url: "https://dns01.zynd.ai",
+          registry_url: "https://zns01.zynd.ai",
           webhook_port: 5000,
           entity_index: identity.derivationIndex,
         };
@@ -174,7 +174,7 @@ export function registerAgentCommand(program: Command): void {
         if (!fs.existsSync(envPath)) {
           const envLines = [
             `ZYND_AGENT_KEYPAIR_PATH=${identity.keypairPath}`,
-            `ZYND_REGISTRY_URL=https://dns01.zynd.ai`,
+            `ZYND_REGISTRY_URL=https://zns01.zynd.ai`,
             "",
           ];
           for (const key of fwMeta.envKeys) envLines.push(`${key}=`);
@@ -351,7 +351,7 @@ export function registerAgentCommand(program: Command): void {
           category: (raw["category"] as string) ?? "general",
           tags: (raw["tags"] as string[]) ?? [],
           registryUrl:
-            (raw["registry_url"] as string) ?? "https://dns01.zynd.ai",
+            (raw["registry_url"] as string) ?? "https://zns01.zynd.ai",
           webhookPort: port,
         });
         const agentInstance = new ZyndAIAgent(config);
