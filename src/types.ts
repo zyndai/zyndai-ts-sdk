@@ -16,7 +16,7 @@ export const ZyndBaseConfigSchema = z.object({
   capabilities: z.record(z.unknown()).optional(),
   autoReconnect: z.boolean().default(true),
   messageHistoryLimit: z.number().int().default(100),
-  registryUrl: z.string().default("https://dns01.zynd.ai"),
+  registryUrl: z.string().default("https://zns01.zynd.ai"),
   webhookHost: z.string().default("0.0.0.0"),
   webhookPort: z.number().int().default(5000),
   entityUrl: z.string().optional(),
