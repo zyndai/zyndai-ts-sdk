@@ -209,24 +209,8 @@ export class ZyndBase {
    */
   private async upsertOnRegistry(): Promise<void> {
     const devKeyPath = defaultDeveloperKeyPath();
-    if (!fs.existsSync(devKeyPath)) {
-      console.log(
-        chalk.yellow(
-          `[registry] developer keypair not found at ${devKeyPath} — skipping auto-register. ` +
-            `Run 'zynd init' or set ZYND_DEVELOPER_KEYPAIR_PATH.`,
-        ),
-      );
-      return;
-    }
+    const hasDevKey = fs.existsSync(devKeyPath);
 
-    const devKp = loadKeypair(devKeyPath);
-    const devId = generateDeveloperId(devKp.publicKeyBytes);
-    const entityIndex = this.config.entityIndex ?? 0;
-    const proof = createDerivationProof(
-      devKp,
-      this.keypair.publicKeyBytes,
-      entityIndex,
-    );
     const entityUrl = this.getBaseUrl();
     const entityName = slugifyName(this.config.name || "", `-${this._entityType}`);
     const entityPricing = this.config.entityPricing
@@ -256,6 +240,10 @@ export class ZyndBase {
       );
     }
 
+    // Always check the registry first — entity self-update only needs the
+    // entity keypair (dual-key auth). Dev key is only needed for first-time
+    // registration. This lets containerised deploys (deployer, k8s) where
+    // only the agent key ships still push URL/tags/summary updates.
     let existing: Record<string, unknown> | null;
     try {
       existing = await getEntity(this.config.registryUrl, this.entityId);
@@ -311,6 +299,27 @@ export class ZyndBase {
       await tryUpdate(diff);
       return;
     }
+
+    // Entity doesn't exist on registry — first-time registration requires
+    // a developer keypair to sign the HD derivation proof. Skip if missing.
+    if (!hasDevKey) {
+      console.log(
+        chalk.yellow(
+          `[registry] entity not registered yet and developer keypair not found at ${devKeyPath} — ` +
+            `skipping initial registration. Run 'zynd init' or set ZYND_DEVELOPER_KEYPAIR_PATH on the box that owns this entity.`,
+        ),
+      );
+      return;
+    }
+
+    const devKp = loadKeypair(devKeyPath);
+    const devId = generateDeveloperId(devKp.publicKeyBytes);
+    const entityIndex = this.config.entityIndex ?? 0;
+    const proof = createDerivationProof(
+      devKp,
+      this.keypair.publicKeyBytes,
+      entityIndex,
+    );
 
     console.log(chalk.dim(`[registry] registering new ${this._entityType}...`));
     try {
