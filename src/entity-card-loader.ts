@@ -1,32 +1,33 @@
+/**
+ * Card / config loader.
+ *
+ * Two roles:
+ *   1. Resolve the agent's keypair from environment / config / disk.
+ *   2. Build the A2A-shaped agent card from a ZyndBaseConfig at runtime.
+ *
+ * The card itself is constructed by `a2a/card.ts`; this module is a thin
+ * adapter that pulls fields off the parsed config and hands them to
+ * `buildAgentCard`.
+ */
+
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex } from "@noble/hashes/utils";
-import { Ed25519Keypair, keypairFromPrivateBytes, loadKeypair } from "./identity";
-import { signEntityCard, buildEndpoints, canonicalJson } from "./entity-card";
-import { EntityCard, EntityCardPricing, ZyndBaseConfig } from "./types";
-
-// Fields included in the card hash — covers all metadata that affects content identity.
-const HASH_FIELDS: ReadonlyArray<keyof EntityCard> = [
-  "name",
-  "description",
-  "capabilities",
-  "category",
-  "tags",
-  "pricing",
-  "summary",
-];
-
-export interface StaticEntityCard {
-  name: string;
-  description?: string;
-  version?: string;
-  category?: string;
-  tags?: string[];
-  summary?: string;
-  capabilities?: Array<{ name: string; category: string }>;
-  pricing?: EntityCardPricing;
-}
+import { z } from "zod";
+import {
+  Ed25519Keypair,
+  keypairFromPrivateBytes,
+  loadKeypair,
+  generateDeveloperId,
+  defaultDeveloperKeyPath,
+} from "./identity.js";
+import type { ZyndBaseConfig } from "./types.js";
+import {
+  buildAgentCard,
+  type BuildCardOptions,
+  type SignedAgentCard,
+  type AgentCardProvider,
+} from "./a2a/card.js";
+import { getDeveloper } from "./registry.js";
 
 export interface ResolveKeypairConfig {
   keypairPath?: string;
@@ -34,54 +35,17 @@ export interface ResolveKeypairConfig {
 }
 
 /**
- * Read a JSON file and validate it contains at minimum a `name` field.
- * Throws with a descriptive message on missing file, invalid JSON, or absent name.
- */
-export function loadEntityCard(filePath: string): StaticEntityCard {
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`Entity card file not found: ${filePath}`);
-  }
-
-  let raw: string;
-  try {
-    raw = fs.readFileSync(filePath, "utf-8");
-  } catch (err) {
-    throw new Error(`Failed to read entity card at ${filePath}`, { cause: err });
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(`Invalid JSON in entity card at ${filePath}`, { cause: err });
-  }
-
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`Entity card at ${filePath} must be a JSON object`);
-  }
-
-  const card = parsed as Record<string, unknown>;
-  if (typeof card["name"] !== "string" || card["name"].trim() === "") {
-    throw new Error(`Entity card at ${filePath} is missing required field: name`);
-  }
-
-  return card as unknown as StaticEntityCard;
-}
-
-/**
- * Resolve a keypair using the following priority chain:
- *   1. ZYND_AGENT_KEYPAIR_PATH env — path to a keypair JSON file
- *   2. ZYND_AGENT_PRIVATE_KEY env — base64-encoded private key bytes
- *   3. config.keypairPath — path to a keypair JSON file
- *   4. .agent/config.json in cwd — reads private_key field (base64)
+ * Resolve the agent keypair using the following priority chain:
+ *   1. ZYND_AGENT_KEYPAIR_PATH env  → keypair JSON file
+ *   2. ZYND_AGENT_PRIVATE_KEY env   → base64 private key bytes
+ *   3. config.keypairPath           → keypair JSON file
+ *   4. .agent/config.json in cwd    → reads private_key field (base64)
  *
- * Throws if no keypair source is found.
+ * Throws if no source is found.
  */
 export function resolveKeypair(config: ResolveKeypairConfig = {}): Ed25519Keypair {
   const envKeypairPath = process.env["ZYND_AGENT_KEYPAIR_PATH"];
-  if (envKeypairPath) {
-    return loadKeypair(envKeypairPath);
-  }
+  if (envKeypairPath) return loadKeypair(envKeypairPath);
 
   const envPrivateKey = process.env["ZYND_AGENT_PRIVATE_KEY"];
   if (envPrivateKey) {
@@ -89,11 +53,8 @@ export function resolveKeypair(config: ResolveKeypairConfig = {}): Ed25519Keypai
     return keypairFromPrivateBytes(privateBytes);
   }
 
-  if (config.keypairPath) {
-    return loadKeypair(config.keypairPath);
-  }
+  if (config.keypairPath) return loadKeypair(config.keypairPath);
 
-  // Fall back to .agent/config.json which stores the agent identity including private_key.
   const configDir = config.configDir ?? ".agent";
   const configFilePath = path.join(process.cwd(), configDir, "config.json");
   if (fs.existsSync(configFilePath)) {
@@ -103,14 +64,12 @@ export function resolveKeypair(config: ResolveKeypairConfig = {}): Ed25519Keypai
     } catch (err) {
       throw new Error(`Failed to read agent config at ${configFilePath}`, { cause: err });
     }
-
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch (err) {
       throw new Error(`Invalid JSON in agent config at ${configFilePath}`, { cause: err });
     }
-
     const data = parsed as Record<string, unknown>;
     if (typeof data["private_key"] === "string") {
       const privateBytes = new Uint8Array(Buffer.from(data["private_key"], "base64"));
@@ -120,97 +79,13 @@ export function resolveKeypair(config: ResolveKeypairConfig = {}): Ed25519Keypai
 
   throw new Error(
     "No keypair found. Set ZYND_AGENT_KEYPAIR_PATH, ZYND_AGENT_PRIVATE_KEY, " +
-      "pass keypairPath, or ensure .agent/config.json exists with a private_key field."
+      "pass keypairPath, or ensure .agent/config.json exists with a private_key field.",
   );
 }
 
 /**
- * Merge static card metadata with runtime identity and sign the result.
- * Copies: name, description, version, category, tags, summary, capabilities, pricing.
- */
-export function buildRuntimeCard(
-  staticCard: StaticEntityCard,
-  baseUrl: string,
-  keypair: Ed25519Keypair
-): EntityCard {
-  const now = new Date().toISOString();
-  const base = baseUrl.replace(/\/+$/, "");
-
-  const card: EntityCard = {
-    entity_id: keypair.entityId,
-    name: staticCard.name,
-    description: staticCard.description ?? "",
-    public_key: keypair.publicKeyString,
-    entity_url: base,
-    version: staticCard.version ?? "1.0",
-    status: "online",
-    capabilities: staticCard.capabilities ?? [],
-    endpoints: buildEndpoints(base),
-    last_heartbeat: now,
-    signed_at: now,
-  };
-
-  if (staticCard.category !== undefined) card.category = staticCard.category;
-  if (staticCard.tags !== undefined) card.tags = staticCard.tags;
-  if (staticCard.summary !== undefined) card.summary = staticCard.summary;
-  if (staticCard.pricing !== undefined) card.pricing = staticCard.pricing;
-
-  return signEntityCard(card, keypair);
-}
-
-/**
- * SHA-256 of canonical JSON of the metadata fields that define card content identity.
- * Deterministic: same input always produces the same hex digest.
- */
-export function computeCardHash(card: Partial<EntityCard>): string {
-  const subset: Record<string, unknown> = {};
-  for (const field of HASH_FIELDS) {
-    // Include the field even when undefined so the hash covers the full field set.
-    subset[field] = (card as Record<string, unknown>)[field] ?? null;
-  }
-  const payload = canonicalJson(subset);
-  const digest = sha256(new TextEncoder().encode(payload));
-  return bytesToHex(digest);
-}
-
-/**
- * Build a static card dict from a ZyndBaseConfig.
- * Capabilities are converted from dict format {category: [name, ...]} to flat list.
- * Pricing is resolved from entityPricing (structured) or price (string) fields.
- */
-export function resolveCardFromConfig(config: ZyndBaseConfig): StaticEntityCard {
-  const card: StaticEntityCard = {
-    name: config.name,
-    description: config.description,
-    category: config.category,
-    version: "1.0",
-  };
-
-  if (config.tags !== undefined) card.tags = config.tags;
-  if (config.summary !== undefined) card.summary = config.summary;
-
-  if (config.capabilities !== undefined) {
-    card.capabilities = flattenCapabilitiesDict(config.capabilities);
-  }
-
-  if (config.entityPricing !== undefined) {
-    // Convert structured pricing to EntityCardPricing.
-    card.pricing = {
-      model: "per-request",
-      currency: config.entityPricing.currency,
-      rates: { default: config.entityPricing.base_price_usd },
-      payment_methods: ["x402"],
-    };
-  } else if (config.price !== undefined) {
-    card.pricing = parsePriceString(config.price);
-  }
-
-  return card;
-}
-
-/**
- * Read a keypair JSON file and return the derived_from metadata object, or null
- * if the file does not contain that field.
+ * Read a keypair JSON file and return the `derived_from` metadata, if any.
+ * Used to reconstruct the developer derivation proof at registration time.
  */
 export function loadDerivationMetadata(keypairPath: string): Record<string, unknown> | null {
   let raw: string;
@@ -219,45 +94,199 @@ export function loadDerivationMetadata(keypairPath: string): Record<string, unkn
   } catch (err) {
     throw new Error(`Failed to read keypair at ${keypairPath}`, { cause: err });
   }
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(`Invalid JSON in keypair file at ${keypairPath}`, { cause: err });
   }
-
   const data = parsed as Record<string, unknown>;
   const derivedFrom = data["derived_from"];
-  if (derivedFrom !== undefined && derivedFrom !== null && typeof derivedFrom === "object") {
+  if (derivedFrom && typeof derivedFrom === "object") {
     return derivedFrom as Record<string, unknown>;
   }
   return null;
 }
 
-function flattenCapabilitiesDict(
-  capabilities: Record<string, unknown>
-): Array<{ name: string; category: string }> {
-  const result: Array<{ name: string; category: string }> = [];
-  for (const [category, names] of Object.entries(capabilities)) {
-    if (Array.isArray(names)) {
-      for (const name of names) {
-        if (typeof name === "string") {
-          result.push({ name, category });
-        }
-      }
-    }
-  }
-  return result;
+// -----------------------------------------------------------------------------
+// A2A card building from the SDK config
+// -----------------------------------------------------------------------------
+
+export interface BuildRuntimeCardArgs {
+  config: ZyndBaseConfig;
+  baseUrl: string;
+  keypair: Ed25519Keypair;
+  entityId: string;
+  payloadModel?: z.ZodTypeAny;
+  outputModel?: z.ZodTypeAny;
+  developerProof?: BuildCardOptions["developerProof"];
+  /**
+   * Provider block to use when `config.provider` is missing or its
+   * `organization` is empty. Typically resolved once at agent startup via
+   * `resolveProviderFromDeveloper()` and cached for the process lifetime.
+   */
+  fallbackProvider?: AgentCardProvider;
 }
 
-function parsePriceString(price: string): EntityCardPricing {
-  // Strip leading currency symbols ($, €, etc.) then parse the numeric portion.
+/**
+ * Resolve the AgentCard `provider` block from the developer's identity.
+ *
+ * Reads the local developer keypair (~/.zynd/developer.json by default),
+ * derives the developer_id, fetches the developer record from the
+ * registry, and builds a provider block using:
+ *   - organization: dev_handle if claimed, else dev name
+ *   - url: home_registry from the registry record
+ *
+ * Returns null when:
+ *   - developer keypair file is missing (no `zynd auth login` yet)
+ *   - the registry has no record for that developer (handle never claimed)
+ *   - the registry call fails (network error, etc.) — non-fatal
+ *
+ * Network failures resolve to null rather than throwing so agent startup
+ * doesn't get blocked by a flaky registry.
+ */
+export async function resolveProviderFromDeveloper(opts: {
+  registryUrl: string;
+  developerKeypairPath?: string;
+}): Promise<AgentCardProvider | null> {
+  const keyPath = opts.developerKeypairPath ?? defaultDeveloperKeyPath();
+  if (!fs.existsSync(keyPath)) return null;
+
+  let devKp;
+  try {
+    devKp = loadKeypair(keyPath);
+  } catch {
+    return null;
+  }
+
+  const developerId = generateDeveloperId(devKp.publicKeyBytes);
+
+  let record: Record<string, unknown> | null;
+  try {
+    record = await getDeveloper(opts.registryUrl, developerId);
+  } catch {
+    return null;
+  }
+  if (!record) return null;
+
+  const handle =
+    typeof record["dev_handle"] === "string" && record["dev_handle"]
+      ? (record["dev_handle"] as string)
+      : null;
+  const name = typeof record["name"] === "string" ? (record["name"] as string) : null;
+  const homeRegistry =
+    typeof record["home_registry"] === "string"
+      ? (record["home_registry"] as string)
+      : registryHostFromUrl(opts.registryUrl);
+
+  const organization = handle ?? name ?? "";
+  if (!organization) return null;
+
+  const provider: AgentCardProvider = { organization };
+  if (homeRegistry) {
+    provider.url = homeRegistry.startsWith("http")
+      ? homeRegistry
+      : `https://${homeRegistry}`;
+  }
+  return provider;
+}
+
+/**
+ * Build the A2A-shaped agent card directly from a ZyndBaseConfig + runtime
+ * identity. The card is fully signed and ready to ship over the wire.
+ */
+export function buildRuntimeCard(args: BuildRuntimeCardArgs): SignedAgentCard {
+  const { config, baseUrl, keypair, entityId, payloadModel, outputModel } = args;
+
+  const pricing = config.entityPricing
+    ? {
+        model: "per-request",
+        currency: config.entityPricing.currency,
+        rates: { default: config.entityPricing.base_price_usd },
+        paymentMethods: ["x402"],
+      }
+    : config.price
+      ? parsePriceString(config.price)
+      : undefined;
+
+  const cardOpts: BuildCardOptions = {
+    name: config.name,
+    description: config.description ?? "",
+    version: config.version,
+    baseUrl,
+    keypair,
+    entityId,
+    protocolVersion: config.protocolVersion,
+    a2aPath: config.a2aPath,
+  };
+  // Provider precedence: config.provider (if it has a real organization),
+  // then args.fallbackProvider (resolved from developer.json + registry),
+  // then nothing.
+  const provider = pickProvider(config.provider, args.fallbackProvider);
+  if (provider) cardOpts.provider = provider;
+  if (config.iconUrl) cardOpts.iconUrl = config.iconUrl;
+  if (config.documentationUrl) cardOpts.documentationUrl = config.documentationUrl;
+  if (config.capabilities) cardOpts.capabilities = config.capabilities;
+  if (config.defaultInputModes) cardOpts.defaultInputModes = config.defaultInputModes;
+  if (config.defaultOutputModes) cardOpts.defaultOutputModes = config.defaultOutputModes;
+  if (config.skills) cardOpts.skills = config.skills;
+  if (payloadModel) cardOpts.payloadModel = payloadModel;
+  if (outputModel) cardOpts.outputModel = outputModel;
+  if (config.fqan) cardOpts.fqan = config.fqan;
+  if (pricing) cardOpts.pricing = pricing;
+  if (args.developerProof) cardOpts.developerProof = args.developerProof;
+  if (config.category) cardOpts.category = config.category;
+  if (config.tags) cardOpts.tags = config.tags;
+  // The card no longer carries a separate `summary` field — the
+  // x-zynd.summary slot was redundant with `description`. Search
+  // consumers should read `description` (or compute their own snippet
+  // from it).
+
+  const registryHost = registryHostFromUrl(config.registryUrl);
+  if (registryHost) cardOpts.registry = registryHost;
+
+  return buildAgentCard(cardOpts);
+}
+
+function parsePriceString(price: string): {
+  model: string;
+  currency: string;
+  rates: Record<string, number>;
+  paymentMethods: string[];
+} {
   const numeric = parseFloat(price.replace(/^[^0-9.]+/, ""));
   return {
     model: "per-request",
     currency: "USDC",
     rates: { default: isNaN(numeric) ? 0 : numeric },
-    payment_methods: ["x402"],
+    paymentMethods: ["x402"],
   };
+}
+
+function registryHostFromUrl(url: string): string | null {
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pick the right provider for the agent card. The user's hand-edited
+ * `config.provider` always wins when its organization is non-empty,
+ * because they explicitly chose to set it. An empty/missing config
+ * provider falls through to the dev-resolved fallback. This way the CLI
+ * can scaffold `provider: { organization: "" }` without it overriding
+ * the auto-resolved value.
+ */
+function pickProvider(
+  fromConfig: AgentCardProvider | undefined,
+  fallback: AgentCardProvider | undefined,
+): AgentCardProvider | undefined {
+  const hasRealConfig =
+    fromConfig &&
+    typeof fromConfig.organization === "string" &&
+    fromConfig.organization.trim().length > 0;
+  if (hasRealConfig) return fromConfig;
+  return fallback;
 }

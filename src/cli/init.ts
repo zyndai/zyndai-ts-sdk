@@ -1,42 +1,24 @@
-import type { Command } from "commander";
-import chalk from "chalk";
-import * as fs from "node:fs";
-import { generateKeypair, generateDeveloperId, saveKeypair } from "../identity.js";
-import {
-  ensureZyndDir,
-  developerKeyPath,
-  saveCliConfig,
-  getRegistryUrl,
-} from "./config.js";
+/**
+ * `zynd init` was removed.
+ *
+ * Developer identities are issued exclusively by the registry now —
+ * organizations running a registry mint keypairs via the browser
+ * onboarding flow. To create or refresh your developer identity:
+ *
+ *   zynd auth login --registry https://your-registry.example.com
+ *
+ * The registry walks you through OAuth, generates an Ed25519 keypair on
+ * the server, and ships the encrypted private key back to your local
+ * `~/.zynd/developer.json`. After that, every subsequent CLI command
+ * picks up that registry as the default home.
+ *
+ * This file is kept only so any stale import of `registerInitCommand`
+ * fails with a useful message instead of a cryptic resolution error.
+ */
 
-export function registerInitCommand(program: Command): void {
-  program
-    .command("init")
-    .description("Initialize developer identity (Ed25519 keypair)")
-    .option("--force", "Overwrite existing developer key")
-    .action((opts: { force?: boolean }) => {
-      const keyPath = developerKeyPath();
-
-      if (fs.existsSync(keyPath) && !opts.force) {
-        console.error(chalk.yellow("Developer key already exists at"), keyPath);
-        console.error(chalk.dim("Use --force to overwrite."));
-        process.exitCode = 1;
-        return;
-      }
-
-      ensureZyndDir();
-      const kp = generateKeypair();
-      saveKeypair(kp, keyPath);
-
-      // Persist default registry URL so subsequent commands have a config baseline.
-      saveCliConfig({ registry_url: getRegistryUrl() });
-
-      const devId = generateDeveloperId(kp.publicKeyBytes);
-
-      console.log(chalk.green("Developer identity created."));
-      console.log();
-      console.log(`  ${chalk.dim("Key file")}      ${keyPath}`);
-      console.log(`  ${chalk.dim("Developer ID")}  ${chalk.hex("#06B6D4")(devId)}`);
-      console.log(`  ${chalk.dim("Public key")}    ${chalk.dim(kp.publicKeyString)}`);
-    });
+export function registerInitCommand(): void {
+  throw new Error(
+    "`zynd init` has been removed. Use `zynd auth login --registry <url>` " +
+      "to create your developer identity through your registry's onboarding flow.",
+  );
 }

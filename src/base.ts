@@ -14,14 +14,36 @@ import {
   sign,
   type Ed25519Keypair,
 } from "./identity.js";
-import { resolveKeypair, resolveCardFromConfig, buildRuntimeCard } from "./entity-card-loader.js";
-import type { StaticEntityCard } from "./entity-card-loader.js";
+import {
+  resolveKeypair,
+  buildRuntimeCard,
+  resolveProviderFromDeveloper,
+} from "./entity-card-loader.js";
+import type { AgentCardProvider } from "./a2a/card.js";
 import { X402PaymentProcessor } from "./payment.js";
 import { SearchAndDiscoveryManager } from "./search.js";
-import { WebhookCommunicationManager } from "./webhook.js";
 import { buildEntityUrl } from "./config-manager.js";
-import { zodSchemaAdvertisement } from "./payload-schema.js";
 import { registerEntity, getEntity, updateEntity } from "./registry.js";
+import { A2AServer, type Handler, type HandlerInput, type TaskHandle } from "./a2a/server.js";
+import type { SignedAgentCard } from "./a2a/card.js";
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+
+/**
+ * Truncate a description into a search-result-friendly summary. Cuts at
+ * the first sentence boundary or 160 chars (Twitter-card-ish), whichever
+ * comes first. Whitespace-collapsed and trimmed.
+ */
+function summarize(text: string, maxLen = 160): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (!collapsed) return "";
+  if (collapsed.length <= maxLen) return collapsed;
+  const firstSentence = collapsed.match(/^(.{20,160}?[.!?])(\s|$)/);
+  if (firstSentence) return firstSentence[1].trim();
+  return collapsed.slice(0, maxLen - 1).trimEnd() + "…";
+}
 
 function slugifyName(name: string, shortSuffix = ""): string {
   let slug = name
@@ -35,15 +57,6 @@ function slugifyName(name: string, shortSuffix = ""): string {
   return slug;
 }
 
-/**
- * Compute a sparse diff between what the registry currently has and what we
- * want to set. Returns only the fields whose values differ so that
- * upsertOnRegistry() can skip the PUT entirely when nothing changed.
- *
- * Tags comparison: null / undefined / [] are all treated as "no tags" so a
- * freshly-registered entity with an empty tag list never triggers a spurious
- * update just because the registry returns `null` while local config has `[]`.
- */
 function computeUpdateDiff(
   existing: Record<string, unknown>,
   desired: Record<string, unknown>,
@@ -52,36 +65,33 @@ function computeUpdateDiff(
   for (const key of Object.keys(desired)) {
     const want = desired[key];
     const have = existing[key];
-
     if (key === "tags") {
-      // Normalise: null / undefined / [] all mean "empty tag list"
-      const wantTags = (Array.isArray(want) && want.length > 0) ? want : [];
-      const haveTags = (Array.isArray(have) && have.length > 0) ? have : [];
-      if (JSON.stringify(wantTags) !== JSON.stringify(haveTags)) {
-        diff[key] = want;
-      }
-    } else {
-      if (JSON.stringify(want) !== JSON.stringify(have ?? null)) {
-        diff[key] = want;
-      }
+      const wantTags = Array.isArray(want) && want.length > 0 ? want : [];
+      const haveTags = Array.isArray(have) && have.length > 0 ? have : [];
+      if (JSON.stringify(wantTags) !== JSON.stringify(haveTags)) diff[key] = want;
+    } else if (JSON.stringify(want) !== JSON.stringify(have ?? null)) {
+      diff[key] = want;
     }
   }
   return diff;
 }
 
-/**
- * Runtime payload validation options. The TS analog of
- * (payload_model=, output_model=, max_file_size_bytes=) from the Python
- * SDK's ZyndAIAgent/ZyndService constructors.
- */
+// -----------------------------------------------------------------------------
+// Validation options handed to the SDK by user code
+// -----------------------------------------------------------------------------
+
 export interface ValidationOptions {
-  /** Zod schema validated against every inbound /webhook body. */
+  /** Zod schema validated against every inbound A2A request payload. */
   payloadModel?: z.ZodTypeAny;
-  /** Zod schema validated against every handler response before it's shipped. */
+  /** Zod schema validated against every handler response. */
   outputModel?: z.ZodTypeAny;
-  /** Max POST body size in bytes — caps inline base64 attachments. Defaults to 25 MiB. */
-  maxFileSizeBytes?: number;
+  /** Max inbound A2A request body in bytes. Defaults to config.maxBodyBytes. */
+  maxBodyBytes?: number;
 }
+
+// -----------------------------------------------------------------------------
+// ZyndBase
+// -----------------------------------------------------------------------------
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const HEARTBEAT_RECONNECT_DELAY_MS = 5_000;
@@ -96,20 +106,15 @@ export class ZyndBase {
   readonly x402Processor: X402PaymentProcessor;
   readonly payToAddress: string;
   readonly search: SearchAndDiscoveryManager;
-  readonly webhook: WebhookCommunicationManager;
+  readonly server: A2AServer;
 
-  private readonly staticCard: StaticEntityCard;
-  private readonly cardBuilder: () => Record<string, unknown>;
   private readonly validation: ValidationOptions;
+  private readonly cardBuilder: () => SignedAgentCard;
+  private resolvedProvider: AgentCardProvider | null = null;
   private heartbeatWs: WebSocket | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatStopped = false;
 
-  // entityType MUST be passed through the constructor — subclass class-field
-  // initializers run AFTER super() returns, so reading `this._entityType`
-  // inside this constructor would otherwise always see the base default and
-  // generate the wrong entityId (e.g., bare `zns:<hex>` for services instead
-  // of `zns:svc:<hex>`).
   constructor(
     config: ZyndBaseConfig,
     validation: ValidationOptions = {},
@@ -121,15 +126,14 @@ export class ZyndBase {
     this.config = ZyndBaseConfigSchema.parse(config);
     this.validation = validation;
 
+    const keypairPath = this.config.keypairPath;
+    const configDir = this.config.configDir;
     this.keypair = resolveKeypair({
-      keypairPath: this.config.keypairPath,
-      configDir: this.config.configDir,
+      ...(keypairPath ? { keypairPath } : {}),
+      ...(configDir ? { configDir } : {}),
     });
 
-    this.entityId = generateEntityId(
-      this.keypair.publicKeyBytes,
-      this._entityType,
-    );
+    this.entityId = generateEntityId(this.keypair.publicKeyBytes, this._entityType);
 
     this.x402Processor = new X402PaymentProcessor({
       ed25519PrivateKeyBytes: this.keypair.privateKeyBytes,
@@ -138,75 +142,93 @@ export class ZyndBase {
 
     this.search = new SearchAndDiscoveryManager(this.config.registryUrl);
 
-    this.staticCard = resolveCardFromConfig(this.config);
-
-    // Precompute the schema advertisement once — JSON-Schema conversion is
-    // non-trivial and the shape only changes when the developer edits
-    // payload.ts, which triggers a process restart anyway.
-    const schemaAd = zodSchemaAdvertisement(
-      this.validation.payloadModel,
-      this.validation.outputModel,
-    );
-
-    this.cardBuilder = (): Record<string, unknown> => {
+    // Build the agent-card lazily — we re-run on every fetch so dynamic
+    // fields like timestamps stay fresh.
+    this.cardBuilder = (): SignedAgentCard => {
       const baseUrl = this.getBaseUrl();
-      const card = buildRuntimeCard(this.staticCard, baseUrl, this.keypair);
-      const result: Record<string, unknown> = { ...card };
-      if (this._entityType === "service") {
-        result["entity_type"] = "service";
-      }
-      if (schemaAd.input_schema) result["input_schema"] = schemaAd.input_schema;
-      if (schemaAd.output_schema) result["output_schema"] = schemaAd.output_schema;
-      if (schemaAd.accepts_files) result["accepts_files"] = true;
-      return result;
+      const buildArgs: Parameters<typeof buildRuntimeCard>[0] = {
+        config: this.config,
+        baseUrl,
+        keypair: this.keypair,
+        entityId: this.entityId,
+      };
+      if (this.validation.payloadModel) buildArgs.payloadModel = this.validation.payloadModel;
+      if (this.validation.outputModel) buildArgs.outputModel = this.validation.outputModel;
+      if (this.resolvedProvider) buildArgs.fallbackProvider = this.resolvedProvider;
+      return buildRuntimeCard(buildArgs);
     };
 
-    const runtimePrice = this.resolveRuntimePrice();
-
-    this.webhook = new WebhookCommunicationManager({
+    const fqan = this.config.fqan;
+    const a2aOpts: ConstructorParameters<typeof A2AServer>[0] = {
       entityId: this.entityId,
-      webhookHost: this.config.webhookHost,
-      webhookPort: this.config.webhookPort,
-      webhookUrl: this.config.webhookUrl,
       keypair: this.keypair,
-      agentCardBuilder: this.cardBuilder,
-      price: runtimePrice,
-      payToAddress: this.payToAddress,
-      messageHistoryLimit: this.config.messageHistoryLimit,
-      payloadModel: this.validation.payloadModel,
-      outputModel: this.validation.outputModel,
-      maxFileSizeBytes: this.validation.maxFileSizeBytes,
-    });
+      agentCardBuilder: () => this.cardBuilder() as unknown as Record<string, unknown>,
+      host: this.config.serverHost,
+      port: this.config.serverPort,
+      a2aPath: this.config.a2aPath,
+      authMode: this.config.authMode,
+      maxBodyBytes: validation.maxBodyBytes ?? this.config.maxBodyBytes,
+    };
+    if (fqan) a2aOpts.fqan = fqan;
+    if (validation.payloadModel) a2aOpts.payloadModel = validation.payloadModel;
+    if (validation.outputModel) a2aOpts.outputModel = validation.outputModel;
+
+    this.server = new A2AServer(a2aOpts);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+
+  get a2aUrl(): string {
+    return this.server.a2aUrl;
+  }
+  get cardUrl(): string {
+    return `${this.getBaseUrl()}/.well-known/agent-card.json`;
   }
 
   /**
-   * Convenience accessor — mirrors `zynd_agent.webhook_url` on the Python SDK.
-   * Templates reference this directly after `await agent.start()` to print the
-   * listen URL.
+   * Register the handler that runs for every inbound message/send and
+   * message/stream call. Subclasses expose a friendlier surface
+   * (`onMessage` for agents, overloaded `setHandler` for services).
    */
-  get webhookUrl(): string {
-    return this.webhook.webhookUrl;
+  protected installHandler(fn: Handler): void {
+    this.server.setHandler(fn);
   }
 
   async start(): Promise<void> {
-    await this.webhook.start();
+    await this.server.start();
+    // Resolve the provider block from the developer keypair + registry
+    // BEFORE writing the card file so the on-disk copy carries the
+    // auto-populated organization/url. Failures are non-fatal: a missing
+    // developer key or an unreachable registry just means the card ships
+    // without a provider block.
+    await this.resolveProvider();
     this.writeCardFile();
     await this.upsertOnRegistry();
     this.startHeartbeat();
     this.displayInfo();
   }
 
-  /**
-   * Register this entity if it doesn't exist on the registry, or update its
-   * record if it does. Mirrors the Python `zynd <kind> run` upsert flow but
-   * runs in-process so a plain `tsx agent.ts` (or `node agent.js`) gets the
-   * same behavior as `zynd agent run`.
-   *
-   * If the developer keypair (~/.zynd/developer.json or
-   * ZYND_DEVELOPER_KEYPAIR_PATH) is missing, registration is skipped with a
-   * warning — this lets containerized deployments where only the agent key
-   * ships still start the webhook + heartbeat.
-   */
+  private async resolveProvider(): Promise<void> {
+    try {
+      this.resolvedProvider = await resolveProviderFromDeveloper({
+        registryUrl: this.config.registryUrl,
+      });
+    } catch {
+      this.resolvedProvider = null;
+    }
+  }
+
+  async stop(): Promise<void> {
+    this.stopHeartbeat();
+    await this.server.stop();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Registry upsert
+  // ---------------------------------------------------------------------------
+
   private async upsertOnRegistry(): Promise<void> {
     const devKeyPath = defaultDeveloperKeyPath();
     const hasDevKey = fs.existsSync(devKeyPath);
@@ -220,9 +242,6 @@ export class ZyndBase {
         }
       : undefined;
 
-    // Services must publish a service_endpoint — registry rejects POST /v1/entities
-    // without it. Default to entityUrl when unset; users can override by setting
-    // ServiceConfig.serviceEndpoint (e.g., an ngrok URL when developing locally).
     let serviceEndpoint: string | undefined;
     let openapiUrl: string | undefined;
     if (this._entityType === "service") {
@@ -235,15 +254,11 @@ export class ZyndBase {
       console.log(
         chalk.yellow(
           `[registry] entity_url ${entityUrl} is a loopback address — the registry and other agents will not be able to reach this ${this._entityType}. ` +
-            `Set ZyndBaseConfig.entityUrl/webhookUrl to a publicly reachable URL (ngrok, cloudflared, or a real domain) before going live.`,
+            `Set ZyndBaseConfig.entityUrl to a publicly reachable URL before going live.`,
         ),
       );
     }
 
-    // Always check the registry first — entity self-update only needs the
-    // entity keypair (dual-key auth). Dev key is only needed for first-time
-    // registration. This lets containerised deploys (deployer, k8s) where
-    // only the agent key ships still push URL/tags/summary updates.
     let existing: Record<string, unknown> | null;
     try {
       existing = await getEntity(this.config.registryUrl, this.entityId);
@@ -261,7 +276,13 @@ export class ZyndBase {
       entity_url: entityUrl,
       category: this.config.category,
       tags: this.config.tags ?? [],
-      summary: this.config.summary ?? "",
+      // The registry's `summary` field is what shows up in search-result
+      // snippets — it should be a short one-liner. We derive it from
+      // `description` rather than asking users to maintain a second prose
+      // field. `summarize()` truncates at the first sentence boundary, or
+      // 160 chars, whichever is shorter. When description is empty we
+      // fall back to the agent name so search results are never blank.
+      summary: summarize(this.config.description ?? "") || this.config.name,
     };
     if (serviceEndpoint) desiredFields["service_endpoint"] = serviceEndpoint;
     if (openapiUrl) desiredFields["openapi_url"] = openapiUrl;
@@ -275,9 +296,7 @@ export class ZyndBase {
           fields: updateFields,
         });
         const changedKeys = Object.keys(updateFields).join(", ");
-        console.log(
-          chalk.hex("#8B5CF6")(`[registry] ✓ updated ${this.entityId} (${changedKeys})`),
-        );
+        console.log(chalk.hex("#8B5CF6")(`[registry] ✓ updated ${this.entityId} (${changedKeys})`));
         return true;
       } catch (err) {
         console.log(
@@ -290,7 +309,9 @@ export class ZyndBase {
     };
 
     if (existing) {
-      console.log(chalk.dim(`[registry] ${this._entityType} already registered — checking for changes...`));
+      console.log(
+        chalk.dim(`[registry] ${this._entityType} already registered — checking for changes...`),
+      );
       const diff = computeUpdateDiff(existing, desiredFields);
       if (Object.keys(diff).length === 0) {
         console.log(chalk.hex("#8B5CF6").dim(`[registry] no changes — skipping update`));
@@ -300,13 +321,11 @@ export class ZyndBase {
       return;
     }
 
-    // Entity doesn't exist on registry — first-time registration requires
-    // a developer keypair to sign the HD derivation proof. Skip if missing.
     if (!hasDevKey) {
       console.log(
         chalk.yellow(
           `[registry] entity not registered yet and developer keypair not found at ${devKeyPath} — ` +
-            `skipping initial registration. Run 'zynd init' or set ZYND_DEVELOPER_KEYPAIR_PATH on the box that owns this entity.`,
+            `skipping initial registration. Run 'zynd auth login --registry <url>' or set ZYND_DEVELOPER_KEYPAIR_PATH on the box that owns this entity.`,
         ),
       );
       return;
@@ -315,11 +334,7 @@ export class ZyndBase {
     const devKp = loadKeypair(devKeyPath);
     const devId = generateDeveloperId(devKp.publicKeyBytes);
     const entityIndex = this.config.entityIndex ?? 0;
-    const proof = createDerivationProof(
-      devKp,
-      this.keypair.publicKeyBytes,
-      entityIndex,
-    );
+    const proof = createDerivationProof(devKp, this.keypair.publicKeyBytes, entityIndex);
 
     console.log(chalk.dim(`[registry] registering new ${this._entityType}...`));
     try {
@@ -330,24 +345,18 @@ export class ZyndBase {
         entityUrl,
         category: this.config.category,
         tags: this.config.tags ?? [],
-        summary: this.config.summary ?? "",
+        summary: summarize(this.config.description ?? "") || this.config.name,
         entityType: this._entityType,
         entityName,
         entityPricing: entityPricing as Record<string, unknown> | undefined,
         developerId: devId,
         developerProof: proof as unknown as Record<string, unknown>,
-        serviceEndpoint,
-        openapiUrl,
+        ...(serviceEndpoint ? { serviceEndpoint } : {}),
+        ...(openapiUrl ? { openapiUrl } : {}),
       });
-      console.log(
-        chalk.hex("#8B5CF6")(`[registry] ✓ registered ${registeredId}`),
-      );
+      console.log(chalk.hex("#8B5CF6")(`[registry] ✓ registered ${registeredId}`));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Registry race / inconsistency: GET returned 404 so we tried POST,
-      // but POST says the entity_id (or pubkey) is already registered.
-      // Fall back to PUT — same keypair owns it, so the update will be
-      // accepted and the entity reaches the desired state.
       if (msg.includes("HTTP 409")) {
         console.log(
           chalk.yellow(
@@ -357,23 +366,33 @@ export class ZyndBase {
         await tryUpdate(desiredFields);
         return;
       }
-      console.log(
-        chalk.red(
-          `[registry] register failed: ${err instanceof Error ? err.message : String(err)}`,
-        ),
-      );
+      console.log(chalk.red(`[registry] register failed: ${msg}`));
     }
   }
 
-  async stop(): Promise<void> {
-    this.stopHeartbeat();
-    await this.webhook.stop();
+  // ---------------------------------------------------------------------------
+  // Card file output
+  // ---------------------------------------------------------------------------
+
+  private writeCardFile(): void {
+    try {
+      const card = this.cardBuilder();
+      const cardPath =
+        this.config.cardOutput || path.join(".well-known", "agent-card.json");
+      const cardDir = path.dirname(cardPath);
+      if (cardDir) fs.mkdirSync(cardDir, { recursive: true });
+      fs.writeFileSync(cardPath, JSON.stringify(card, null, 2));
+    } catch {
+      // Best-effort. Card is also served live via /.well-known/agent-card.json.
+    }
   }
 
+  // ---------------------------------------------------------------------------
+  // URL helpers
+  // ---------------------------------------------------------------------------
+
   private getBaseUrl(): string {
-    const url = buildEntityUrl(this.config);
-    if (url.endsWith("/webhook")) return url.slice(0, -"/webhook".length);
-    return url.replace(/\/+$/, "");
+    return buildEntityUrl(this.config);
   }
 
   private isLoopbackUrl(url: string): boolean {
@@ -391,31 +410,9 @@ export class ZyndBase {
     }
   }
 
-  private resolveRuntimePrice(): string | undefined {
-    if (this.config.price) return this.config.price;
-
-    if (this.config.entityPricing) {
-      const base = this.config.entityPricing.base_price_usd;
-      if (typeof base === "number" && base > 0) {
-        const currency = this.config.entityPricing.currency || "USDC";
-        return `$${base} ${currency}`;
-      }
-    }
-
-    return undefined;
-  }
-
-  private writeCardFile(): void {
-    try {
-      const card = this.cardBuilder();
-      const cardPath = this.config.cardOutput || path.join(".well-known", "agent.json");
-      const cardDir = path.dirname(cardPath);
-      if (cardDir) fs.mkdirSync(cardDir, { recursive: true });
-      fs.writeFileSync(cardPath, JSON.stringify(card, null, 2));
-    } catch {
-      // Card file write is best-effort; the card is still served via HTTP.
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // Heartbeat
+  // ---------------------------------------------------------------------------
 
   private startHeartbeat(): void {
     this.heartbeatStopped = false;
@@ -460,25 +457,15 @@ export class ZyndBase {
 
     ws.on("open", () => {
       this.heartbeatWs = ws;
-      console.log(chalk.dim(`[heartbeat] connected (interval ${HEARTBEAT_INTERVAL_MS / 1000}s)`));
+      console.log(
+        chalk.dim(`[heartbeat] connected (interval ${HEARTBEAT_INTERVAL_MS / 1000}s)`),
+      );
       this.sendHeartbeat(ws);
-      this.heartbeatTimer = setInterval(() => {
-        this.sendHeartbeat(ws);
-      }, HEARTBEAT_INTERVAL_MS);
+      this.heartbeatTimer = setInterval(() => this.sendHeartbeat(ws), HEARTBEAT_INTERVAL_MS);
     });
 
     ws.on("error", (err: Error) => {
       console.log(chalk.yellow(`[heartbeat] ws error: ${err.message}`));
-      if (err.message.includes("404")) {
-        console.log(
-          chalk.yellow(
-            `[heartbeat] hint: 404 means the registry has no record of ${this.entityId}. ` +
-              `Check earlier '[registry]' lines for a registration failure (e.g., missing developer keypair, network error, or HTTP 4xx). ` +
-              `Re-register with 'zynd ${this._entityType} run' or ensure ZyndBase.start() completes successfully before the heartbeat begins.`,
-          ),
-        );
-      }
-      // Reconnect handled in close handler — error always precedes close.
     });
 
     ws.on("close", (code: number, reason: Buffer) => {
@@ -499,18 +486,9 @@ export class ZyndBase {
 
   private sendHeartbeat(ws: WebSocket): void {
     if (ws.readyState !== WebSocket.OPEN) return;
-    // Second-precision UTC ISO-8601 ("YYYY-MM-DDTHH:MM:SSZ") — matches Python
-    // SDK's `time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())`. The registry
-    // verifies the Ed25519 signature over the exact timestamp string, so any
-    // millisecond suffix here causes signature mismatch and the registry
-    // closes the WS upgrade with a 4xx.
     const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    const signature = sign(
-      this.keypair.privateKeyBytes,
-      new TextEncoder().encode(timestamp),
-    );
+    const signature = sign(this.keypair.privateKeyBytes, new TextEncoder().encode(timestamp));
     ws.send(JSON.stringify({ timestamp, signature }));
-    console.log(chalk.dim(`[heartbeat] sent @ ${timestamp}`));
   }
 
   private scheduleHeartbeatReconnect(): void {
@@ -518,9 +496,17 @@ export class ZyndBase {
     setTimeout(() => this.connectHeartbeatWs(), HEARTBEAT_RECONNECT_DELAY_MS);
   }
 
+  // ---------------------------------------------------------------------------
+  // Display
+  // ---------------------------------------------------------------------------
+
   private displayInfo(): void {
     const name = this.config.name || "Unnamed";
-    const price = this.resolveRuntimePrice() || "Free";
+    const price =
+      this.config.price ??
+      (this.config.entityPricing
+        ? `$${this.config.entityPricing.base_price_usd} ${this.config.entityPricing.currency}`
+        : "Free");
     const pubKey = this.keypair.publicKeyString;
 
     console.log();
@@ -535,8 +521,12 @@ export class ZyndBase {
     console.log(`  ${chalk.dim("ID")}           ${chalk.hex("#06B6D4")(this.entityId)}`);
     console.log(`  ${chalk.dim("Public Key")}   ${chalk.dim(pubKey)}`);
     console.log(`  ${chalk.dim("Address")}      ${chalk.dim(this.payToAddress)}`);
-    console.log(`  ${chalk.dim("Webhook")}      ${chalk.hex("#10B981")(this.webhook.webhookUrl)}`);
+    console.log(`  ${chalk.dim("A2A")}          ${chalk.hex("#10B981")(this.a2aUrl)}`);
+    console.log(`  ${chalk.dim("Card")}         ${chalk.hex("#10B981")(this.cardUrl)}`);
     console.log(`  ${chalk.dim("Price")}        ${price}`);
     console.log();
   }
 }
+
+// Re-export for convenience.
+export type { Handler, HandlerInput, TaskHandle } from "./a2a/server.js";
