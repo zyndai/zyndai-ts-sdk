@@ -46,7 +46,11 @@ export function registerAuthCommand(program: Command): void {
       const authUrl = onboarding.auth_url ?? "";
 
       if (mode !== "restricted" || !authUrl) {
-        console.log("This registry uses open onboarding. Use 'zynd init' instead.");
+        console.log(
+          "This registry uses open onboarding. Self-issued developer keypairs " +
+            "are no longer supported by the CLI — ask the registry operator to " +
+            "enable browser-based onboarding (auth_url in /v1/info).",
+        );
         return;
       }
 
@@ -146,7 +150,7 @@ export function registerAuthCommand(program: Command): void {
     .action(() => {
       const keyPath = developerKeyPath();
       if (!fs.existsSync(keyPath)) {
-        console.log("No developer identity found. Run 'zynd auth login' or 'zynd init'.");
+        console.log("No developer identity found. Run 'zynd auth login --registry <url>'.");
         return;
       }
       const kp = loadKeypair(keyPath);

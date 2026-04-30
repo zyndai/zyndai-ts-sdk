@@ -31,7 +31,7 @@ export function registerKeysCommand(program: Command): void {
         console.log(`  ${chalk.dim("ID")}      ${chalk.hex("#06B6D4")(devId)}`);
         console.log(`  ${chalk.dim("Public")}  ${chalk.dim(kp.publicKeyString)}`);
       } else {
-        console.log(chalk.dim("No developer key. Run: zynd init"));
+        console.log(chalk.dim("No developer key. Run: zynd auth login --registry <url>"));
       }
 
       const agentDir = agentsDir();
@@ -83,7 +83,7 @@ export function registerKeysCommand(program: Command): void {
     .action((opts: { index: number; name?: string }) => {
       const devPath = developerKeyPath();
       if (!fs.existsSync(devPath)) {
-        console.error(chalk.red("No developer key found. Run: zynd init"));
+        console.error(chalk.red("No developer key found. Run: zynd auth login --registry <url>"));
         process.exitCode = 1;
         return;
       }
