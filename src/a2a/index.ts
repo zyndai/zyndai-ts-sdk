@@ -67,6 +67,8 @@ export {
   fromA2AMessage,
   toA2AMessage,
   coerceHandlerOutput,
+  taskReplyText,
+  partsToReplyText,
 } from "./adapter.js";
 export type { Attachment, InboundMessage } from "./adapter.js";
 

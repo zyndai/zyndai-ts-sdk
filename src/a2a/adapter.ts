@@ -106,10 +106,19 @@ export function fromA2AMessage(
   const content = texts.join("\n").trim();
 
   // Compose the payload object the handler will see. Keep `content` as the
-  // canonical text field (matches AgentMessage), expose attachments alongside.
+  // canonical text field (matches AgentMessage) and expose `prompt` as an
+  // alias so legacy RequestPayload schemas declared as `{ prompt: z.string() }`
+  // still validate. Mirrors the Python SDK's `_prompt_aliases_content`
+  // model_validator in payload.py.
+  const textValue =
+    content ||
+    (dataMerge["content"] as string | undefined) ||
+    (dataMerge["prompt"] as string | undefined) ||
+    "";
   const payloadDict: Record<string, unknown> = {
     ...dataMerge,
-    content: content || (dataMerge["content"] as string | undefined) || "",
+    content: textValue,
+    prompt: textValue,
     attachments,
     sender_id:
       (message.metadata?.["x-zynd-auth"] as { entity_id?: string } | undefined)
@@ -196,6 +205,76 @@ export function toA2AMessage(opts: {
   if (opts.metadata) msg.metadata = opts.metadata;
 
   return msg;
+}
+
+/**
+ * Extract the agent's reply text from a completed Task.
+ *
+ * Reads in priority order:
+ *   1. task.artifacts[].parts        — where completed-task replies live;
+ *                                       handler returns end up here.
+ *   2. task.status.message.parts     — when the agent attached a message
+ *                                       to a non-terminal status update.
+ *   3. (last fallback) task.history  — for input-required loopbacks where
+ *                                       the agent's question is the last
+ *                                       message in history.
+ *
+ * **Do NOT read task.history[last] directly** to get the response: history
+ * contains the conversation log including your own outbound message, so
+ * naive `history[history.length - 1]` returns your input back at you.
+ * That misread caused infinite tool loops in early LangChain agents.
+ *
+ * `TextPart` joined with newlines; `DataPart` contributes its `response`
+ * or `text` field if present, else the JSON-stringified data.
+ */
+export function taskReplyText(task: {
+  artifacts?: ReadonlyArray<{ parts?: ReadonlyArray<unknown> }>;
+  status?: { state?: string; message?: { parts?: ReadonlyArray<unknown> } };
+  history?: ReadonlyArray<{ parts?: ReadonlyArray<unknown> }>;
+}): string {
+  const fromArtifacts = (task.artifacts ?? [])
+    .map((a) => partsToReplyText(a.parts ?? []))
+    .filter(Boolean)
+    .join("\n");
+  if (fromArtifacts) return fromArtifacts;
+
+  const fromStatus = partsToReplyText(task.status?.message?.parts ?? []);
+  if (fromStatus) return fromStatus;
+
+  // Last resort: scan history for the most recent agent-role message.
+  // We don't have the role here (the structural type above is loose), so
+  // we just take the last message's parts. Callers in input-required
+  // flows should rely on the SDK's built-in resume path, not this helper.
+  const last = task.history?.[task.history.length - 1];
+  if (last) return partsToReplyText(last.parts ?? []);
+
+  return `(task ${task.status?.state ?? "unknown"})`;
+}
+
+/**
+ * Walk a Parts array and join into a single reply string. Internal helper
+ * for taskReplyText — exported for advanced callers who already have a
+ * Parts array (e.g. from a status update event).
+ */
+export function partsToReplyText(parts: ReadonlyArray<unknown>): string {
+  const chunks: string[] = [];
+  for (const raw of parts) {
+    const part = raw as { kind?: string; text?: string; data?: unknown };
+    if (part.kind === "text" && typeof part.text === "string") {
+      chunks.push(part.text);
+    } else if (
+      part.kind === "data" &&
+      part.data &&
+      typeof part.data === "object" &&
+      !Array.isArray(part.data)
+    ) {
+      const d = part.data as Record<string, unknown>;
+      if (typeof d["response"] === "string") chunks.push(d["response"] as string);
+      else if (typeof d["text"] === "string") chunks.push(d["text"] as string);
+      else chunks.push(JSON.stringify(d));
+    }
+  }
+  return chunks.join("\n").trim();
 }
 
 /**

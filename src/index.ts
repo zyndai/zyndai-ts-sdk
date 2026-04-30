@@ -91,6 +91,8 @@ export {
   fromA2AMessage,
   toA2AMessage,
   coerceHandlerOutput,
+  taskReplyText,
+  partsToReplyText,
   canonicalJson,
   canonicalBytes,
   TERMINAL_STATES,

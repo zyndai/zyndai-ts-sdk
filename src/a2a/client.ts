@@ -22,7 +22,7 @@ import type {
   JsonRpcError,
 } from "./types.js";
 import { signMessage, type SignOptions } from "./auth.js";
-import { toA2AMessage, type Attachment } from "./adapter.js";
+import { toA2AMessage, taskReplyText, type Attachment } from "./adapter.js";
 import type { Ed25519Keypair } from "../identity.js";
 
 export interface ClientOptions {
@@ -193,6 +193,33 @@ export class A2AClient {
   async callViaCard(cardUrl: string, callOpts: Omit<CallOptions, "url">): Promise<ATask> {
     const endpoint = await resolveA2AEndpoint(cardUrl);
     return this.sync({ ...callOpts, url: endpoint });
+  }
+
+  /**
+   * Convenience: call another agent and return its reply text directly.
+   *
+   * This is the right method to use from inside an LLM tool. It encapsulates
+   * the (sync → read artifacts → join text/data parts) sequence so callers
+   * don't accidentally read task.history[last] (which is their own outbound
+   * message echoed back, causing the LLM to loop on the tool).
+   *
+   * Accepts either an A2A endpoint URL (will be called directly) or a card
+   * URL / base URL (resolved to the A2A endpoint via /.well-known/agent-card.json).
+   */
+  async ask(
+    target: string,
+    text: string,
+    opts: Omit<CallOptions, "url" | "text"> = {},
+  ): Promise<string> {
+    // Heuristic: ".json" or "/.well-known/" → card URL; everything else
+    // we treat as a card-or-base URL and let callViaCard normalize it.
+    // If the caller passed a true A2A endpoint URL (ends in /a2a/v1) we
+    // also go through callViaCard which fetches the card and reads the
+    // canonical `url` field — that's the spec-compliant behavior.
+    const task = target.includes("/a2a/")
+      ? await this.sync({ ...opts, url: target, text })
+      : await this.callViaCard(target, { ...opts, text });
+    return taskReplyText(task);
   }
 
   // ---------------------------------------------------------------------------
