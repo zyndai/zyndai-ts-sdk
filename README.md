@@ -108,7 +108,7 @@ const service = new ZyndService({
   capabilities: { text: ["transform"] },
   webhookPort: 5000,
   entityUrl: "https://your-public-domain.com", // must be reachable; also used as service_endpoint by default
-  registryUrl: "https://dns01.zynd.ai",
+  registryUrl: "https://zns01.zynd.ai",
   keypairPath: process.env.ZYND_SERVICE_KEYPAIR_PATH,
   // serviceEndpoint: "https://tunnel.example.com",  // only needed when the registry should publish a different URL than entityUrl
 });
@@ -130,7 +130,7 @@ const agent = new ZyndAIAgent({
   capabilities: { text: ["echo"] },
   webhookPort: 5001,
   entityUrl: "https://your-public-domain.com", // must be reachable
-  registryUrl: "https://dns01.zynd.ai",
+  registryUrl: "https://zns01.zynd.ai",
   keypairPath: process.env.ZYND_AGENT_KEYPAIR_PATH,
 });
 
@@ -168,7 +168,7 @@ agent.setCustomAgent(async (input) => "response");
 ```ts
 import { SearchAndDiscoveryManager } from "zyndai";
 
-const search = new SearchAndDiscoveryManager("https://dns01.zynd.ai");
+const search = new SearchAndDiscoveryManager("https://zns01.zynd.ai");
 const results = await search.searchEntities({ query: "stock price" });
 const target = results[0];
 
@@ -200,7 +200,7 @@ console.log(data.response);
 | `webhookPort` | `number` | `5000` | Local port the webhook server listens on |
 | `entityUrl` | `string` | — | Public base URL advertised to the registry (required for inbound calls) |
 | `webhookUrl` | `string` | — | Override the full webhook URL if non-standard |
-| `registryUrl` | `string` | `"https://dns01.zynd.ai"` | Registry endpoint |
+| `registryUrl` | `string` | `"https://zns01.zynd.ai"` | Registry endpoint |
 | `price` | `string` | — | x402 price string, e.g. `"$0.01"` |
 | `entityPricing` | `{ base_price_usd: number; currency: string }` | — | Structured pricing (alternative to `price`) |
 | `keypairPath` | `string` | — | Path to keypair JSON file |
@@ -292,7 +292,7 @@ Signatures use the format `ed25519:<base64>` throughout.
 After `agent.start()` (or `service.start()`), the SDK opens a WebSocket connection to:
 
 ```
-wss://dns01.zynd.ai/v1/entities/<entity_id>/ws
+wss://zns01.zynd.ai/v1/entities/<entity_id>/ws
 ```
 
 Every **30 seconds** it sends a signed ping:
@@ -331,7 +331,7 @@ const service = new ZyndService({
   webhookPort: 5000,
   entityUrl: "http://localhost:5000",  // SDK uses this as its base
   serviceEndpoint: "https://abc123.ngrok.io",  // what the registry publishes
-  registryUrl: "https://dns01.zynd.ai",
+  registryUrl: "https://zns01.zynd.ai",
   keypairPath: process.env.ZYND_SERVICE_KEYPAIR_PATH,
 });
 ```
