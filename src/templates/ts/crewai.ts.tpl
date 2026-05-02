@@ -1,18 +1,6 @@
-/**
- * __AGENT_NAME__ — CrewAI-style Multi-Agent System on the ZyndAI Network
+/** __AGENT_NAME__ — CrewAI-style Multi-Agent System on the Zynd network.
  *
- * CrewAI has no official TypeScript port, so this template implements the
- * researcher + analyst pattern with LangChain.js. The crew object exposes a
- * `.kickoff({ inputs })` method that returns `{ raw }` — the same shape
- * ZyndAIAgent.setCrewAgent() expects, so a drop-in replacement with the
- * community `crewai-ts` package (https://www.npmjs.com/package/crewai-ts)
- * will work without changes here.
- *
- * Install dependencies:
- *   npm install zyndai @langchain/openai @langchain/community @langchain/core langchain
- *
- * Run:
- *   npx tsx agent.ts
+ * npm install zyndai @langchain/openai @langchain/community @langchain/core langchain
  */
 
 import "dotenv/config";
@@ -36,8 +24,6 @@ const _config: Record<string, any> = fs.existsSync("agent.config.json")
   ? JSON.parse(fs.readFileSync("agent.config.json", "utf-8"))
   : {};
 
-// Minimal CrewLike shape. ZyndAIAgent.setCrewAgent() calls
-// `crew.kickoff({ inputs })` and reads `{ raw }` off the result.
 interface Crew {
   kickoff(args: { inputs?: Record<string, unknown> }): Promise<{ raw: string }>;
 }
@@ -45,35 +31,21 @@ interface Crew {
 function createCrew(): Crew {
   const llm = new ChatOpenAI({ model: "gpt-4o-mini", temperature: 0 });
   const searchTool = new TavilySearchResults({ maxResults: 3 });
+  const parser = new StringOutputParser();
 
-  // Researcher — gathers facts.
   const researcherPrompt = ChatPromptTemplate.fromMessages([
-    [
-      "system",
-      "You are a Researcher. Goal: research and gather comprehensive data on the topic.",
-    ],
+    ["system", "You are a Researcher. Goal: research and gather comprehensive data on the topic."],
     ["human", "Research the topic: {query}. Gather key data and facts."],
   ]);
 
-  // Analyst — consumes researcher output and produces insight.
   const analystPrompt = ChatPromptTemplate.fromMessages([
-    [
-      "system",
-      "You are a senior Analyst. Produce balanced, professional analysis.",
-    ],
-    [
-      "human",
-      "Research findings:\n{research}\n\nNow analyze and provide insights on: {query}",
-    ],
+    ["system", "You are a senior Analyst. Produce balanced, professional analysis."],
+    ["human", "Research findings:\n{research}\n\nNow analyze and provide insights on: {query}"],
   ]);
-
-  const parser = new StringOutputParser();
 
   return {
     async kickoff({ inputs = {} }) {
       const query = String(inputs.query ?? "");
-
-      // Step 1: researcher (with optional web search).
       let researchNotes: string;
       try {
         const hits = await searchTool.invoke(query);
@@ -81,18 +53,11 @@ function createCrew(): Crew {
       } catch {
         researchNotes = "(no search tool output)";
       }
-
       const research = await researcherPrompt
         .pipe(llm)
         .pipe(parser)
         .invoke({ query: `${query}\n\nSearch results:\n${researchNotes}` });
-
-      // Step 2: analyst.
-      const analysis = await analystPrompt
-        .pipe(llm)
-        .pipe(parser)
-        .invoke({ query, research });
-
+      const analysis = await analystPrompt.pipe(llm).pipe(parser).invoke({ query, research });
       return { raw: analysis };
     },
   };
@@ -101,14 +66,12 @@ function createCrew(): Crew {
 async function main() {
   const agentConfig = AgentConfigSchema.parse({
     name: _config.name ?? "__AGENT_NAME__",
-    description:
-      _config.description ??
-      "__AGENT_NAME__ — a CrewAI-style multi-agent system on the Zynd network.",
+    description: _config.description ?? "__AGENT_NAME__ — a CrewAI-style multi-agent system on the Zynd network.",
     version: _config.version ?? "0.1.0",
     category: _config.category ?? "general",
     tags: _config.tags ?? ["crewai", "multi-agent"],
     serverHost: _config.server_host ?? "0.0.0.0",
-    serverPort: Number(process.env.ZYND_SERVER_PORT ?? _config.server_port ?? 5000),
+    serverPort: Number(process.env.ZYND_SERVER_PORT ?? _config.server_port ?? _config.webhook_port ?? 5000),
     authMode: _config.auth_mode ?? "permissive",
     registryUrl: resolveRegistryUrl({ fromConfigFile: _config.registry_url }),
     keypairPath: process.env.ZYND_AGENT_KEYPAIR_PATH ?? _config.keypair_path,
@@ -125,13 +88,11 @@ async function main() {
     outputModel: ResponsePayload,
     maxBodyBytes: MAX_FILE_SIZE_BYTES,
   });
-  const crew = createCrew();
-  zyndAgent.setCrewAgent(crew);
+  zyndAgent.setCrewAgent(createCrew());
 
   zyndAgent.onMessage(async (input: HandlerInput, task: TaskHandle) => {
     try {
-      const response = await zyndAgent.invoke(input.message.content);
-      return { response };
+      return { response: await zyndAgent.invoke(input.message.content) };
     } catch (e) {
       return task.fail(e instanceof Error ? e.message : String(e));
     }
@@ -139,7 +100,7 @@ async function main() {
 
   await zyndAgent.start();
 
-  console.log(`\n__AGENT_NAME__ is running (CrewAI-style, A2A)`);
+  console.log(`\n__AGENT_NAME__ is running (CrewAI-style)`);
   console.log(`A2A endpoint: ${zyndAgent.a2aUrl}`);
   console.log(`Agent card:   ${zyndAgent.cardUrl}`);
 

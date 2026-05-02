@@ -443,7 +443,12 @@ export function registerAgentCommand(program: Command): void {
       if (entry) {
         const { spawn } = await import("node:child_process");
         const env = { ...process.env };
-        if (opts.port) env["ZYND_SERVER_PORT"] = String(opts.port);
+        // Always forward the resolved port. Without this, a port that came
+        // from agent.config.json (vs the --port flag) wouldn't reach the
+        // child's environment and the child's own port resolution might
+        // disagree with what we just printed — leading to "logs say 5008,
+        // SDK binds 5000" surprises.
+        env["ZYND_SERVER_PORT"] = String(port);
 
         let cmd: string;
         let args: string[];

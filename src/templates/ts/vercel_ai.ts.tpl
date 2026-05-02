@@ -1,11 +1,6 @@
-/**
- * __AGENT_NAME__ — Vercel AI SDK Agent on the ZyndAI Network
+/** __AGENT_NAME__ — Vercel AI SDK Agent on the Zynd network.
  *
- * Install dependencies:
- *   npm install zyndai ai @ai-sdk/openai zod
- *
- * Run:
- *   npx tsx agent.ts
+ * npm install zyndai ai @ai-sdk/openai zod
  */
 
 import "dotenv/config";
@@ -29,19 +24,17 @@ const _config: Record<string, any> = fs.existsSync("agent.config.json")
   : {};
 
 const hello = tool({
-  description: "A simple demo tool. Replace with your own tools.",
+  description: "A simple demo tool. Replace with your own.",
   parameters: z.object({ query: z.string() }),
   execute: async ({ query }) => `Hello! You asked: ${query}`,
 });
 
-// Duck-typed to the VercelAiLike interface: async .generateText({ prompt }) -> { text }.
 interface VercelAgent {
   generateText(opts: { prompt: string }): Promise<{ text: string }>;
 }
 
 function createAgent(): VercelAgent {
   const model = openai("gpt-4o-mini");
-
   return {
     async generateText({ prompt }) {
       const { text } = await generateText({
@@ -59,14 +52,12 @@ function createAgent(): VercelAgent {
 async function main() {
   const agentConfig = AgentConfigSchema.parse({
     name: _config.name ?? "__AGENT_NAME__",
-    description:
-      _config.description ??
-      "__AGENT_NAME__ — a Vercel AI SDK agent on the Zynd network.",
+    description: _config.description ?? "__AGENT_NAME__ — a Vercel AI SDK agent on the Zynd network.",
     version: _config.version ?? "0.1.0",
     category: _config.category ?? "general",
     tags: _config.tags ?? ["vercel-ai"],
     serverHost: _config.server_host ?? "0.0.0.0",
-    serverPort: Number(process.env.ZYND_SERVER_PORT ?? _config.server_port ?? 5000),
+    serverPort: Number(process.env.ZYND_SERVER_PORT ?? _config.server_port ?? _config.webhook_port ?? 5000),
     authMode: _config.auth_mode ?? "permissive",
     registryUrl: resolveRegistryUrl({ fromConfigFile: _config.registry_url }),
     keypairPath: process.env.ZYND_AGENT_KEYPAIR_PATH ?? _config.keypair_path,
@@ -83,13 +74,11 @@ async function main() {
     outputModel: ResponsePayload,
     maxBodyBytes: MAX_FILE_SIZE_BYTES,
   });
-  const vercelAgent = createAgent();
-  zyndAgent.setVercelAiAgent(vercelAgent);
+  zyndAgent.setVercelAiAgent(createAgent());
 
   zyndAgent.onMessage(async (input: HandlerInput, task: TaskHandle) => {
     try {
-      const response = await zyndAgent.invoke(input.message.content);
-      return { response };
+      return { response: await zyndAgent.invoke(input.message.content) };
     } catch (e) {
       return task.fail(e instanceof Error ? e.message : String(e));
     }
@@ -97,7 +86,7 @@ async function main() {
 
   await zyndAgent.start();
 
-  console.log(`\n__AGENT_NAME__ is running (Vercel AI SDK, A2A)`);
+  console.log(`\n__AGENT_NAME__ is running (Vercel AI SDK)`);
   console.log(`A2A endpoint: ${zyndAgent.a2aUrl}`);
   console.log(`Agent card:   ${zyndAgent.cardUrl}`);
 
