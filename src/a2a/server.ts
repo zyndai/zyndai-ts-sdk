@@ -383,6 +383,12 @@ export class A2AServer {
     const contextId = message.contextId ?? this.taskStore.newContextId();
     const entry = this.taskStore.getOrCreate(taskId, contextId);
 
+    // Pick up an inline pushNotificationConfig if the caller passed one in
+    // params.configuration. Saves a separate
+    // tasks/pushNotificationConfig/set round trip and matches the A2A
+    // MessageSendConfiguration spec.
+    this.maybeSetInlinePushConfig(taskId, parseResult.data.configuration);
+
     // Resume suspended handler if applicable.
     if (entry.task.status.state === "input-required" || entry.task.status.state === "auth-required") {
       const resumed = this.taskStore.resumeIfSuspended(taskId, message);
@@ -442,6 +448,9 @@ export class A2AServer {
     const contextId = message.contextId ?? this.taskStore.newContextId();
     this.taskStore.getOrCreate(taskId, contextId);
     this.taskStore.appendMessage(taskId, message);
+
+    // Inline pushNotificationConfig — same shortcut as message/send.
+    this.maybeSetInlinePushConfig(taskId, parseResult.data.configuration);
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -864,6 +873,28 @@ export class A2AServer {
   private respondSuccess(res: Response, id: string | number | null, result: unknown): void {
     const body: JsonRpcResponse = { jsonrpc: "2.0", id, result };
     res.json(body);
+  }
+
+  /**
+   * Honor `params.configuration.pushNotificationConfig` when present.
+   *
+   * A2A spec allows the caller to register a callback URL inline with
+   * message/send so they don't need a separate
+   * tasks/pushNotificationConfig/set round-trip. Accepts both camelCase
+   * (the spec) and snake_case (Python clients sometimes serialize this
+   * way through field aliases).
+   */
+  private maybeSetInlinePushConfig(taskId: string, configuration: unknown): void {
+    if (!configuration || typeof configuration !== "object") return;
+    const cfgRecord = configuration as Record<string, unknown>;
+    const raw =
+      cfgRecord["pushNotificationConfig"] ??
+      cfgRecord["push_notification_config"];
+    if (!raw || typeof raw !== "object") return;
+    const cfgEntry = raw as Record<string, unknown>;
+    const url = cfgEntry["url"];
+    if (typeof url !== "string" || url.length === 0) return;
+    this.taskStore.setPushConfig(taskId, cfgEntry as Parameters<typeof this.taskStore.setPushConfig>[1]);
   }
 
   private respondError(
