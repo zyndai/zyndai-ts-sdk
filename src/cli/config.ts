@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
-const DEFAULT_REGISTRY_URL = "https://dns01.zynd.ai";
+const DEFAULT_REGISTRY_URL = "https://zns01.zynd.ai";
 
 export function zyndDir(): string {
   return process.env.ZYND_HOME ?? path.join(os.homedir(), ".zynd");

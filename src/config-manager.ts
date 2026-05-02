@@ -54,13 +54,15 @@ function deriveSummary(text: string, maxLen = 160): string {
  *
  *   1. explicit override (caller-supplied)
  *   2. $ZYND_REGISTRY_URL env var       — ephemeral override (e.g. localhost dev)
- *   3. project config field             — what was baked into *.config.json
- *   4. ~/.zynd/config.json registry_url — the developer's home registry
- *   5. https://dns01.zynd.ai             — last-resort default
+ *   3. ~/.zynd/config.json registry_url — the developer's logged-in registry
+ *                                         (set by `zynd auth login --registry`)
+ *   4. project config field             — fallback for projects that bake a URL
+ *   5. https://zns01.zynd.ai            — last-resort default
  *
- * Priority 4 catches the case where a project's *.config.json is stale
- * (copied from another project, checked in long ago, etc.) but the user's
- * current home registry is set.
+ * Priority 3 wins over the project config so that once a developer logs into
+ * an organization's registry, every project they touch targets that registry
+ * — they don't have to remember to update each project's *.config.json.
+ * Override knobs (1 and 2) still trump it for explicit per-call routing.
  */
 export function resolveRegistryUrl(opts: {
   override?: string | undefined;
@@ -69,10 +71,10 @@ export function resolveRegistryUrl(opts: {
   if (opts.override) return opts.override;
   const env = process.env["ZYND_REGISTRY_URL"];
   if (env) return env;
-  if (opts.fromConfigFile) return opts.fromConfigFile;
   const home = loadHomeRegistryUrl();
   if (home) return home;
-  return "https://dns01.zynd.ai";
+  if (opts.fromConfigFile) return opts.fromConfigFile;
+  return "https://zns01.zynd.ai";
 }
 
 const DEFAULT_CONFIG_DIR = ".agent";

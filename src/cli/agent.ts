@@ -275,13 +275,19 @@ export function registerAgentCommand(program: Command): void {
         };
         fs.writeFileSync(configFilePath, JSON.stringify(configPayload, null, 2));
 
-        // .env with registry URL, keypair path, and framework's expected API keys.
+        // .env with keypair path and framework's expected API keys.
         // Keypair path is absolute — keypair lives outside the project dir.
+        //
+        // We intentionally DON'T bake ZYND_REGISTRY_URL here. The env var is
+        // the highest-priority registry source after CLI flags, so writing it
+        // would lock the project to whatever registry was current at scaffold
+        // time and silently override any later `zynd auth login --registry
+        // <new-url>`. Without it, the SDK runtime always defers to the
+        // developer's currently logged-in registry (~/.zynd/config.json).
         const envPath = path.join(cwd, ".env");
         if (!fs.existsSync(envPath)) {
           const envLines = [
             `ZYND_AGENT_KEYPAIR_PATH=${identity.keypairPath}`,
-            `ZYND_REGISTRY_URL=${projectRegistry}`,
             "",
           ];
           for (const key of fwMeta.envKeys) envLines.push(`${key}=`);

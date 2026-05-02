@@ -58,7 +58,7 @@ export const ZyndBaseConfigSchema = z.object({
   // overlapping prose fields.
 
   // Network
-  registryUrl: z.string().default("https://dns01.zynd.ai"),
+  registryUrl: z.string().default("https://zns01.zynd.ai"),
   /** Public URL the agent advertises. Falls back to host/port derivation. */
   entityUrl: z.string().optional(),
 

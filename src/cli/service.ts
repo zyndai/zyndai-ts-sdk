@@ -151,14 +151,21 @@ export function registerServiceCommand(program: Command): void {
 
       fs.writeFileSync(configFilePath, JSON.stringify(serviceJson, null, 2));
 
-      // .env scaffold. Keypair path is absolute — file lives outside the project.
+      // .env scaffold. Keypair path is absolute — file lives outside the
+      // project dir.
+      //
+      // We intentionally DON'T bake ZYND_REGISTRY_URL here. The env var is
+      // the highest-priority registry source after CLI flags, so writing it
+      // would lock the project to whatever registry was current at scaffold
+      // time and silently override any later `zynd auth login --registry
+      // <new-url>`. Without it, the SDK runtime always defers to the
+      // developer's currently logged-in registry (~/.zynd/config.json).
       const envPath = path.join(cwd, ".env");
       if (!fs.existsSync(envPath)) {
         fs.writeFileSync(
           envPath,
           [
             `ZYND_SERVICE_KEYPAIR_PATH=${identity.keypairPath}`,
-            `ZYND_REGISTRY_URL=https://dns01.zynd.ai`,
             "",
           ].join("\n"),
         );
