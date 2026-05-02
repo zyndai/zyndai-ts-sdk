@@ -85,52 +85,37 @@ describe("buildEntityUrl", () => {
   it("prefers entityUrl when present", () => {
     const config = ZyndBaseConfigSchema.parse({
       entityUrl: "https://example.com/agent",
-      webhookUrl: "https://other.com/webhook",
     });
     expect(buildEntityUrl(config)).toBe("https://example.com/agent");
   });
 
-  it("strips /webhook suffix from entityUrl", () => {
+  it("strips trailing slashes from entityUrl", () => {
     const config = ZyndBaseConfigSchema.parse({
-      entityUrl: "https://example.com/agent/webhook",
+      entityUrl: "https://example.com/agent/",
     });
     expect(buildEntityUrl(config)).toBe("https://example.com/agent");
   });
 
-  it("falls back to webhookUrl when entityUrl is absent", () => {
+  it("derives URL from host/port when entityUrl is unset", () => {
     const config = ZyndBaseConfigSchema.parse({
-      webhookUrl: "https://fallback.com/agent",
-    });
-    expect(buildEntityUrl(config)).toBe("https://fallback.com/agent");
-  });
-
-  it("strips /webhook suffix from webhookUrl", () => {
-    const config = ZyndBaseConfigSchema.parse({
-      webhookUrl: "https://fallback.com/agent/webhook",
-    });
-    expect(buildEntityUrl(config)).toBe("https://fallback.com/agent");
-  });
-
-  it("derives URL from host/port when neither entityUrl nor webhookUrl is set", () => {
-    const config = ZyndBaseConfigSchema.parse({
-      webhookHost: "192.168.1.10",
-      webhookPort: 8080,
+      serverHost: "192.168.1.10",
+      serverPort: 8080,
     });
     expect(buildEntityUrl(config)).toBe("http://192.168.1.10:8080");
   });
 
   it("maps 0.0.0.0 to localhost in derived URL", () => {
     const config = ZyndBaseConfigSchema.parse({
-      webhookHost: "0.0.0.0",
-      webhookPort: 5000,
+      serverHost: "0.0.0.0",
+      serverPort: 5000,
     });
     expect(buildEntityUrl(config)).toBe("http://localhost:5000");
   });
 
   it("uses https scheme for port 443", () => {
     const config = ZyndBaseConfigSchema.parse({
-      webhookHost: "0.0.0.0",
-      webhookPort: 443,
+      serverHost: "0.0.0.0",
+      serverPort: 443,
     });
     expect(buildEntityUrl(config)).toBe("https://localhost:443");
   });

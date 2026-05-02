@@ -1,5 +1,5 @@
 """
-__AGENT_NAME__ — CrewAI Agent on ZyndAI Network
+__AGENT_NAME__ — CrewAI Agent on the Zynd network (A2A protocol).
 
 Install dependencies:
     pip install zyndai-agent crewai crewai-tools
@@ -8,26 +8,33 @@ Run:
     python agent.py
 """
 
-from zyndai_agent.agent import AgentConfig, ZyndAIAgent
-from zyndai_agent.message import AgentMessage
+from __future__ import annotations
 
-from payload import RequestPayload, ResponsePayload, MAX_FILE_SIZE_BYTES
-
-from dotenv import load_dotenv
 import json
 import os
 import sys
 
+from dotenv import load_dotenv
+
+from zyndai_agent import (
+    AgentConfig,
+    ZyndAIAgent,
+    resolve_registry_url,
+)
+from zyndai_agent.a2a.server import HandlerInput, TaskHandle
+
+from payload import RequestPayload, ResponsePayload, MAX_FILE_SIZE_BYTES
+
 load_dotenv()
 
 # Load agent.config.json for runtime settings
-_config = {}
+_config: dict = {}
 if os.path.exists("agent.config.json"):
     with open("agent.config.json") as _f:
         _config = json.load(_f)
 
 
-def create_crew():
+def build_crew():
     from crewai import Agent, Task, Crew, Process
     from crewai_tools import SerperDevTool
 
@@ -38,14 +45,14 @@ def create_crew():
         goal="Research and gather comprehensive data",
         backstory="You are an expert researcher who excels at finding relevant information.",
         tools=[search_tool],
-        verbose=True,
+        verbose=False,
     )
 
     analyst = Agent(
         role="Analyst",
         goal="Analyze data and provide insights",
         backstory="You are a senior analyst who provides balanced, professional analysis.",
-        verbose=True,
+        verbose=False,
     )
 
     research_task = Task(
@@ -64,50 +71,61 @@ def create_crew():
         agents=[researcher, analyst],
         tasks=[research_task, analysis_task],
         process=Process.sequential,
-        verbose=True,
+        verbose=False,
     )
 
 
 if __name__ == "__main__":
     agent_config = AgentConfig(
         name=_config.get("name", "__AGENT_NAME__"),
-        description=_config.get("description", "__AGENT_NAME__ — a CrewAI multi-agent system on the ZyndAI network."),
-        capabilities={
-            "ai": ["nlp", "crewai", "multi_agent"],
-            "protocols": ["http"],
-        },
+        description=_config.get(
+            "description",
+            "__AGENT_NAME__ — a CrewAI multi-agent system on the Zynd network.",
+        ),
+        version=_config.get("version", "0.1.0"),
         category=_config.get("category", "general"),
         tags=_config.get("tags", ["crewai", "multi-agent"]),
-        summary=_config.get("summary", "__AGENT_NAME__ agent"),
-        webhook_host="0.0.0.0",
-        webhook_port=_config.get("webhook_port", 5000),
-        registry_url=os.environ.get("ZYND_REGISTRY_URL", _config.get("registry_url", "http://localhost:8080")),
+        server_host=_config.get("server_host", "0.0.0.0"),
+        server_port=int(os.environ.get("ZYND_SERVER_PORT", _config.get("server_port", 5000))),
+        auth_mode=_config.get("auth_mode", "permissive"),
+        registry_url=resolve_registry_url(from_config_file=_config.get("registry_url")),
         keypair_path=os.environ.get("ZYND_AGENT_KEYPAIR_PATH", _config.get("keypair_path")),
         entity_url=os.environ.get("ZYND_ENTITY_URL", _config.get("entity_url")),
         price=_config.get("price"),
         entity_pricing=_config.get("entity_pricing"),
+        entity_index=_config.get("entity_index", 0),
+        skills=_config.get("skills"),
+        fqan=_config.get("fqan"),
     )
 
     zynd_agent = ZyndAIAgent(
-        agent_config=agent_config,
+        config=agent_config,
         payload_model=RequestPayload,
         output_model=ResponsePayload,
-        max_file_size_bytes=MAX_FILE_SIZE_BYTES,
+        max_body_bytes=MAX_FILE_SIZE_BYTES,
     )
-    crew = create_crew()
+
+    crew = build_crew()
     zynd_agent.set_crewai_agent(crew)
 
-    def message_handler(message: AgentMessage, topic: str):
+    # CrewAI's stateful crew object isn't designed for fan-out conversation
+    # memory the way LangChain executors are — each run is a fresh
+    # research/analysis pipeline. If you need per-context memory, swap
+    # this out for langchain.py.tpl + a custom researcher tool, or wire
+    # CrewAI's own Memory module per task.
+    def handle(inbound: HandlerInput, task: TaskHandle):
         try:
-            response = zynd_agent.invoke(message.content)
-            zynd_agent.set_response(message.message_id, response)
+            response = zynd_agent.invoke(inbound.message.content)
+            return {"response": response}
         except Exception as e:
-            zynd_agent.set_response(message.message_id, f"Error: {str(e)}")
+            return task.fail(str(e))
 
-    zynd_agent.add_message_handler(message_handler)
+    zynd_agent.on_message(handle)
+    zynd_agent.start()
 
-    print(f"\n__AGENT_NAME__ is running (CrewAI)")
-    print(f"Webhook: {zynd_agent.webhook_url}")
+    print(f"\n__AGENT_NAME__ is running (CrewAI, A2A)")
+    print(f"A2A endpoint: {zynd_agent.a2a_url}")
+    print(f"Agent card:   {zynd_agent.card_url}")
 
     if sys.stdin.isatty():
         print("Type 'exit' to quit\n")
@@ -118,6 +136,7 @@ if __name__ == "__main__":
                 break
             if cmd.lower() == "exit":
                 break
+        zynd_agent.stop()
     else:
         import signal
         signal.pause()

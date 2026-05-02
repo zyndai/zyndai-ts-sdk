@@ -30,26 +30,15 @@ export type {
   AgentSearchResponse,
   SearchRequest,
   SearchResult,
-  EntityEndpoints,
-  EntityCardPricing,
-  EntityCard,
   AgentConfigFile,
   DerivationProof,
 } from "./types.js";
 
 export {
-  buildEndpoints,
-  buildEntityCard,
-  signEntityCard,
-} from "./entity-card.js";
-
-export {
-  loadEntityCard,
   resolveKeypair,
   buildRuntimeCard,
-  computeCardHash,
-  resolveCardFromConfig,
   loadDerivationMetadata,
+  resolveProviderFromDeveloper,
 } from "./entity-card-loader.js";
 
 export * as DNSRegistryClient from "./registry.js";
@@ -58,19 +47,22 @@ export { SearchAndDiscoveryManager } from "./search.js";
 
 export { X402PaymentProcessor } from "./payment.js";
 
-export { ConfigManager, buildEntityUrl } from "./config-manager.js";
-
 export {
-  WebhookCommunicationManager,
-  DEFAULT_MAX_FILE_SIZE_BYTES,
-} from "./webhook.js";
-export type { WebhookOptions, MessageHandler } from "./webhook.js";
+  ConfigManager,
+  buildEntityUrl,
+  resolveRegistryUrl,
+  loadHomeRegistryUrl,
+} from "./config-manager.js";
 
 export { ZyndBase } from "./base.js";
-export type { ValidationOptions } from "./base.js";
+export type {
+  ValidationOptions,
+  Handler,
+  HandlerInput,
+  TaskHandle,
+} from "./base.js";
 
 export { ZyndAIAgent } from "./agent.js";
-
 export { ZyndService } from "./service.js";
 
 export {
@@ -81,4 +73,86 @@ export {
 export { encryptMessage, decryptMessage } from "./crypto.js";
 export type { EncryptedMessage } from "./crypto.js";
 
-export const VERSION = "0.2.1";
+// A2A communication layer — full surface re-exported here so users can
+// `import { A2AClient, signMessage, ... } from "zyndai"` without reaching
+// into the subdirectory.
+export {
+  A2AServer,
+  A2AClient,
+  A2AError,
+  resolveA2AEndpoint,
+  TaskStore,
+  signMessage,
+  verifyMessage,
+  ZyndAuthError,
+  ReplayCache,
+  buildAgentCard,
+  signAgentCard,
+  fromA2AMessage,
+  toA2AMessage,
+  coerceHandlerOutput,
+  taskReplyText,
+  partsToReplyText,
+  canonicalJson,
+  canonicalBytes,
+  TERMINAL_STATES,
+  INTERRUPTED_STATES,
+  ZYND_AUTH_KEY,
+  ZYND_AUTH_VERSION,
+  ZYND_AUTH_DOMAIN_TAG,
+  MessageSchema,
+  PartSchema,
+  TaskSchema,
+  ArtifactSchema,
+  TaskStateSchema,
+  TaskStatusSchema,
+  PushNotificationConfigSchema,
+  ZyndAuthSchema,
+  DEFAULT_MAX_BODY_BYTES,
+} from "./a2a/index.js";
+
+export type {
+  Message,
+  MessageRole,
+  Part,
+  TextPart,
+  FilePart,
+  DataPart,
+  AFile,
+  FileWithBytes,
+  FileWithUri,
+  ATask,
+  Artifact,
+  TaskStatus,
+  TaskState,
+  TaskStatusUpdateEvent,
+  TaskArtifactUpdateEvent,
+  StreamEvent,
+  PushNotificationConfig,
+  TaskPushNotificationConfig,
+  ZyndAuth,
+  JsonRpcRequest,
+  JsonRpcResponse,
+  JsonRpcSuccess,
+  JsonRpcError,
+  MessageSendParams,
+  TaskIdParams,
+  TaskQueryParams,
+  AuthMode,
+  SignOptions,
+  VerifyOptions,
+  VerifyContext,
+  Attachment,
+  InboundMessage,
+  A2AServerOptions,
+  ClientOptions,
+  CallOptions,
+  BuildCardOptions,
+  AgentCardSkill,
+  AgentCardProvider,
+  AgentCardCapabilities,
+  AgentCardSecurityScheme,
+  SignedAgentCard,
+} from "./a2a/index.js";
+
+export const VERSION = "0.3.0";

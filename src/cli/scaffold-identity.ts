@@ -72,7 +72,7 @@ function collectIndex(filePath: string, used: Set<number>): void {
  *   ~/.zynd/services/<slug>/keypair.json
  *
  * Throws if the developer key (`~/.zynd/developer.json`) is missing —
- * the user must run `zynd init` first.
+ * the user must run `zynd auth login --registry <url>` first.
  */
 export function scaffoldIdentity(opts: {
   name: string;
@@ -82,7 +82,8 @@ export function scaffoldIdentity(opts: {
   const devPath = developerKeyPath();
   if (!fs.existsSync(devPath)) {
     throw new Error(
-      "No developer keypair found. Run `zynd init` first to create your developer identity.",
+      "No developer keypair found. Run `zynd auth login --registry <url>` first " +
+        "to create your developer identity through the registry's onboarding flow.",
     );
   }
 

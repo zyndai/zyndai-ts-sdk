@@ -1,4 +1,4 @@
-import { canonicalJson } from "./entity-card.js";
+import { canonicalJson } from "./a2a/canonical.js";
 import { Ed25519Keypair, sign } from "./identity.js";
 import type { SearchRequest, SearchResult } from "./types.js";
 
@@ -161,6 +161,32 @@ export async function getEntity(
     throw new Error(`getEntity: HTTP ${resp.status}: ${text}`);
   }
 
+  return resp.json() as Promise<Record<string, unknown>>;
+}
+
+/**
+ * GET /v1/developers/{id} — fetches the developer record by developer_id
+ * (`zns:dev:<hash>`). Returns null if the registry has no record yet (e.g.
+ * developer keypair was created but the handle was never claimed via
+ * `zynd auth login`). Used by buildRuntimeCard to auto-populate the agent card's
+ * provider block.
+ */
+export async function getDeveloper(
+  registryUrl: string,
+  developerId: string,
+): Promise<Record<string, unknown> | null> {
+  const url = `${registryUrl}/v1/developers/${encodeURIComponent(developerId)}`;
+  let resp: Response;
+  try {
+    resp = await fetch(url);
+  } catch (err) {
+    throw new Error(`getDeveloper: network error: ${String(err)}`, { cause: err });
+  }
+  if (resp.status === 404) return null;
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "(unreadable)");
+    throw new Error(`getDeveloper: HTTP ${resp.status}: ${text}`);
+  }
   return resp.json() as Promise<Record<string, unknown>>;
 }
 
