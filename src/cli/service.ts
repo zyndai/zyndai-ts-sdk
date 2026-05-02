@@ -18,6 +18,7 @@ import {
   writeTsPackageJson,
 } from "./scaffold-ts.js";
 import { scaffoldIdentity } from "./scaffold-identity.js";
+import { getRegistryUrl } from "./config.js";
 
 function templatesDir(): string {
   const here =
@@ -118,28 +119,53 @@ export function registerServiceCommand(program: Command): void {
         return;
       }
 
+      // Locked to the developer's home registry — see comment in
+      // cli/agent.ts for the rationale. No per-command --registry on
+      // `zynd service init`.
+      const projectRegistry = getRegistryUrl();
+
+      // Authored fields only — see cli/agent.ts for the rationale on what's
+      // auto-derived vs scaffolded.
       const serviceJson = {
         name,
-        language: lang,
         description: `${name} service`,
+        version: "0.1.0",
         category: "general",
         tags: [],
-        summary: "",
-        registry_url: "https://zns01.zynd.ai",
-        webhook_port: 5000,
+        registry_url: projectRegistry,
+        server_host: "0.0.0.0",
+        server_port: 5000,
+        auth_mode: "permissive",
         entity_index: identity.derivationIndex,
+        skills: [
+          {
+            id: "default",
+            name: name,
+            description:
+              `${name}'s primary capability — replace this with what your service actually does.`,
+            tags: [],
+            examples: [],
+          },
+        ],
       };
 
       fs.writeFileSync(configFilePath, JSON.stringify(serviceJson, null, 2));
 
-      // .env scaffold. Keypair path is absolute — file lives outside the project.
+      // .env scaffold. Keypair path is absolute — file lives outside the
+      // project dir.
+      //
+      // We intentionally DON'T bake ZYND_REGISTRY_URL here. The env var is
+      // the highest-priority registry source after CLI flags, so writing it
+      // would lock the project to whatever registry was current at scaffold
+      // time and silently override any later `zynd auth login --registry
+      // <new-url>`. Without it, the SDK runtime always defers to the
+      // developer's currently logged-in registry (~/.zynd/config.json).
       const envPath = path.join(cwd, ".env");
       if (!fs.existsSync(envPath)) {
         fs.writeFileSync(
           envPath,
           [
             `ZYND_SERVICE_KEYPAIR_PATH=${identity.keypairPath}`,
-            `ZYND_REGISTRY_URL=https://zns01.zynd.ai`,
             "",
           ].join("\n"),
         );
@@ -244,25 +270,31 @@ export function registerServiceCommand(program: Command): void {
         fs.readFileSync(configPath, "utf-8"),
       ) as Record<string, unknown>;
       const name = (raw["name"] as string) ?? "unnamed-service";
-      const port = opts.port ?? (raw["webhook_port"] as number) ?? 5000;
+      const port =
+        opts.port ??
+        (raw["server_port"] as number) ??
+        (raw["webhook_port"] as number) ??
+        5000;
 
       console.log(chalk.dim(`Starting service "${name}" on port ${port}...`));
       console.log();
 
-      const declaredLang = raw["language"] as string | undefined;
-      const tsEntries = ["service.ts", "service.js", "service.mjs", "service.cjs"];
-      const pyEntries = ["service.py"];
-      const entries =
-        declaredLang === "py" ? [...pyEntries, ...tsEntries] : [...tsEntries, ...pyEntries];
-
-      const entry = entries
+      // Auto-detect entry by file presence (TS first, then Python).
+      const candidates = [
+        "service.ts",
+        "service.js",
+        "service.mjs",
+        "service.cjs",
+        "service.py",
+      ];
+      const entry = candidates
         .map((f) => path.join(cwd, f))
         .find((f) => fs.existsSync(f));
 
       if (entry) {
         const { spawn } = await import("node:child_process");
         const env = { ...process.env };
-        if (opts.port) env["WEBHOOK_PORT"] = String(opts.port);
+        if (opts.port) env["ZYND_SERVER_PORT"] = String(opts.port);
 
         let cmd: string;
         let args: string[];
@@ -288,15 +320,8 @@ export function registerServiceCommand(program: Command): void {
       try {
         const { ZyndService } = await import("../service.js");
         const { ServiceConfigSchema } = await import("../types.js");
-        const config = ServiceConfigSchema.parse({
-          name,
-          description: (raw["description"] as string) ?? "",
-          category: (raw["category"] as string) ?? "general",
-          tags: (raw["tags"] as string[]) ?? [],
-          registryUrl:
-            (raw["registry_url"] as string) ?? "https://zns01.zynd.ai",
-          webhookPort: port,
-        });
+        const { configFromConfigJson } = await import("./agent.js");
+        const config = ServiceConfigSchema.parse(configFromConfigJson(raw, port));
         const svc = new ZyndService(config);
         svc.setHandler((input: string) => `Service echo: ${input}`);
         await svc.start();

@@ -10,33 +10,39 @@ describe("ZyndBaseConfigSchema", () => {
   it("applies defaults for minimal input", () => {
     const config = ZyndBaseConfigSchema.parse({});
     expect(config.name).toBe("");
-    expect(config.webhookHost).toBe("0.0.0.0");
-    expect(config.webhookPort).toBe(5000);
+    expect(config.serverHost).toBe("0.0.0.0");
+    expect(config.serverPort).toBe(5000);
+    expect(config.a2aPath).toBe("/a2a/v1");
+    expect(config.authMode).toBe("permissive");
     expect(config.registryUrl).toBe("https://dns01.zynd.ai");
     expect(config.category).toBe("general");
-    expect(config.autoReconnect).toBe(true);
     expect(config.messageHistoryLimit).toBe(100);
+    expect(config.protocolVersion).toBe("0.3.0");
   });
 
   it("parses full config", () => {
     const config = ZyndBaseConfigSchema.parse({
       name: "test-agent",
       description: "A test agent",
-      webhookPort: 8080,
+      serverPort: 8080,
       entityUrl: "https://example.com",
       price: "$0.01",
       tags: ["test", "demo"],
+      authMode: "strict",
+      skills: [
+        { id: "translate", name: "Translate", description: "..." },
+      ],
     });
     expect(config.name).toBe("test-agent");
-    expect(config.webhookPort).toBe(8080);
+    expect(config.serverPort).toBe(8080);
     expect(config.entityUrl).toBe("https://example.com");
     expect(config.tags).toEqual(["test", "demo"]);
+    expect(config.authMode).toBe("strict");
+    expect(config.skills?.[0].id).toBe("translate");
   });
 
   it("rejects invalid port", () => {
-    expect(() =>
-      ZyndBaseConfigSchema.parse({ webhookPort: "not-a-number" })
-    ).toThrow();
+    expect(() => ZyndBaseConfigSchema.parse({ serverPort: "nope" })).toThrow();
   });
 });
 

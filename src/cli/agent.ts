@@ -21,6 +21,8 @@ import {
   writeTsPackageJson,
 } from "./scaffold-ts.js";
 import { scaffoldIdentity } from "./scaffold-identity.js";
+import { getRegistryUrl } from "./config.js";
+import { resolveRegistryUrl } from "../config-manager.js";
 
 /**
  * Resolve the directory containing bundled .tpl templates.
@@ -32,6 +34,77 @@ function templatesDir(): string {
       ? __dirname
       : path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(here, "..", "templates");
+}
+
+/**
+ * Translate the snake_case `agent.config.json` shape (what users hand-edit)
+ * into the camelCase config the SDK Zod schema expects. Both shapes are
+ * accepted on the SDK boundary so users can drop into either style.
+ */
+export function configFromConfigJson(
+  raw: Record<string, unknown>,
+  portOverride?: number,
+): Record<string, unknown> {
+  const pick = <T>(...keys: string[]): T | undefined => {
+    for (const k of keys) {
+      if (raw[k] !== undefined) return raw[k] as T;
+    }
+    return undefined;
+  };
+
+  return {
+    // ---- User-edited basics ---------------------------------------------
+    name: pick<string>("name") ?? "",
+    description: pick<string>("description") ?? "",
+    version: pick<string>("version") ?? "0.1.0",
+    category: pick<string>("category") ?? "general",
+    tags: pick<string[]>("tags") ?? [],
+
+    // ---- Network / bind --------------------------------------------------
+    registryUrl: resolveRegistryUrl({
+      fromConfigFile: pick<string>("registry_url", "registryUrl"),
+    }),
+    serverHost: pick<string>("server_host", "serverHost") ?? "0.0.0.0",
+    serverPort:
+      portOverride ??
+      (Number(process.env["ZYND_SERVER_PORT"] ?? "") ||
+        pick<number>("server_port", "serverPort", "webhook_port") ||
+        5000),
+    authMode: pick<string>("auth_mode", "authMode") ?? "permissive",
+    entityUrl: process.env["ZYND_ENTITY_URL"] ?? pick<string>("entity_url", "entityUrl"),
+
+    // ---- Identity --------------------------------------------------------
+    keypairPath:
+      process.env["ZYND_AGENT_KEYPAIR_PATH"] ??
+      pick<string>("keypair_path", "keypairPath"),
+    entityIndex: pick<number>("entity_index", "entityIndex"),
+    developerKeypairPath:
+      process.env["ZYND_DEVELOPER_KEYPAIR_PATH"] ??
+      pick<string>("developer_keypair_path", "developerKeypairPath"),
+
+    // ---- Optional advanced fields ---------------------------------------
+    // Most agents don't set these; they're picked up if present.
+    cardOutput: pick<string>("card_output", "cardOutput"),
+    iconUrl: pick<string>("icon_url", "iconUrl"),
+    documentationUrl: pick<string>("documentation_url", "documentationUrl"),
+    capabilities: pick<Record<string, boolean>>("capabilities"),
+    skills: pick<unknown[]>("skills"),
+    fqan: pick<string>("fqan"),
+    price: pick<string>("price"),
+    entityPricing: pick<Record<string, unknown>>("entity_pricing", "entityPricing"),
+
+    // ---- Auto-resolved (still readable from config for code-level overrides) ----
+    // The SDK also auto-fills these at runtime; reading from config first
+    // means a developer can hardcode them in code if they want without
+    // touching scaffolded config.
+    provider: pick<Record<string, string>>("provider"),
+    defaultInputModes: pick<string[]>("default_input_modes", "defaultInputModes"),
+    defaultOutputModes: pick<string[]>("default_output_modes", "defaultOutputModes"),
+    // protocolVersion / a2aPath / summary intentionally NOT read here:
+    //   - protocolVersion: SDK constant (0.3.0); not user-controllable
+    //   - a2aPath:         SDK constant (/a2a/v1); not user-controllable
+    //   - summary:         derived from description at registry-register time
+  };
 }
 
 function loadTemplate(relPath: string): string | null {
@@ -154,27 +227,67 @@ export function registerAgentCommand(program: Command): void {
           return;
         }
 
+        // The registry baked into the project is the developer's home
+        // registry — set once at `zynd auth login --registry <url>` time
+        // and read here from ~/.zynd/config.json. We deliberately do NOT
+        // honor a per-command --registry override: an entity is owned by
+        // a developer, the developer lives on exactly one registry, so
+        // an agent scaffolded against a different registry would fail
+        // the moment it tries to register. The only valid way to switch
+        // is to re-run `zynd auth login --registry NEW_URL` (which
+        // overwrites the developer keypair). $ZYND_REGISTRY_URL still
+        // works as an ephemeral override for local-dev (e.g. pointing at
+        // a localhost registry while testing).
+        const projectRegistry = getRegistryUrl();
+
+        // Scaffolded config — authored fields only. Auto-derived fields are
+        // intentionally absent:
+        //   - provider:       from ~/.zynd/developer.json + registry
+        //   - input/output schemas + default modes: from payload.ts (Zod)
+        //   - protocolVersion, a2aPath: SDK constants
+        //   - summary:        derived from description at register time
+        //   - framework, language: detected from code / file presence
+        //
+        // Skills ARE included — they describe what your agent does and
+        // need to be authored. The starter has a single placeholder skill;
+        // edit it to match your real capabilities (or add more entries).
         const configPayload: Record<string, unknown> = {
           name,
-          framework,
-          language: lang,
           description: `${name} agent`,
+          version: "0.1.0",
           category: "general",
           tags: [],
-          summary: "",
-          registry_url: "https://zns01.zynd.ai",
-          webhook_port: 5000,
+          registry_url: projectRegistry,
+          server_host: "0.0.0.0",
+          server_port: 5000,
+          auth_mode: "permissive",
           entity_index: identity.derivationIndex,
+          skills: [
+            {
+              id: "default",
+              name: name,
+              description:
+                `${name}'s primary capability — replace this with what your agent actually does.`,
+              tags: [],
+              examples: [],
+            },
+          ],
         };
         fs.writeFileSync(configFilePath, JSON.stringify(configPayload, null, 2));
 
-        // .env with registry URL, keypair path, and framework's expected API keys.
+        // .env with keypair path and framework's expected API keys.
         // Keypair path is absolute — keypair lives outside the project dir.
+        //
+        // We intentionally DON'T bake ZYND_REGISTRY_URL here. The env var is
+        // the highest-priority registry source after CLI flags, so writing it
+        // would lock the project to whatever registry was current at scaffold
+        // time and silently override any later `zynd auth login --registry
+        // <new-url>`. Without it, the SDK runtime always defers to the
+        // developer's currently logged-in registry (~/.zynd/config.json).
         const envPath = path.join(cwd, ".env");
         if (!fs.existsSync(envPath)) {
           const envLines = [
             `ZYND_AGENT_KEYPAIR_PATH=${identity.keypairPath}`,
-            `ZYND_REGISTRY_URL=https://zns01.zynd.ai`,
             "",
           ];
           for (const key of fwMeta.envKeys) envLines.push(`${key}=`);
@@ -218,17 +331,21 @@ export function registerAgentCommand(program: Command): void {
           writeGitignore(cwd);
         }
 
-        // .well-known placeholder — regenerated on first `zynd agent run`.
+        // .well-known placeholder — regenerated on first `zynd agent run` or
+        // `zynd card build`. The CLI auto-builds an A2A-shaped agent card
+        // from agent.config.json, so callers always see this file but should
+        // not edit it directly.
         const wellKnownDir = path.join(cwd, ".well-known");
         fs.mkdirSync(wellKnownDir, { recursive: true });
-        const wkFile = path.join(wellKnownDir, "agent.json");
+        const wkFile = path.join(wellKnownDir, "agent-card.json");
         if (!fs.existsSync(wkFile)) {
           fs.writeFileSync(
             wkFile,
             JSON.stringify(
               {
                 _note:
-                  "This file is auto-generated when the agent runs. Do not edit manually.",
+                  "Auto-generated by `zynd agent run` from agent.config.json. " +
+                  "Do not edit manually — edit agent.config.json instead.",
               },
               null,
               2,
@@ -301,25 +418,32 @@ export function registerAgentCommand(program: Command): void {
         fs.readFileSync(configPath, "utf-8"),
       ) as Record<string, unknown>;
       const name = (raw["name"] as string) ?? "unnamed-agent";
-      const port = opts.port ?? (raw["webhook_port"] as number) ?? 5000;
+      const port =
+        opts.port ??
+        (raw["server_port"] as number) ??
+        (raw["webhook_port"] as number) ?? // back-compat with older configs
+        5000;
 
       console.log(chalk.dim(`Starting agent "${name}" on port ${port}...`));
       console.log();
 
-      // Candidate entry files, preferring the language recorded in config.
-      const declaredLang = raw["language"] as string | undefined;
-      const tsEntries = ["agent.ts", "agent.js", "agent.mjs", "agent.cjs"];
-      const pyEntries = ["agent.py"];
-      const entries = declaredLang === "py" ? [...pyEntries, ...tsEntries] : [...tsEntries, ...pyEntries];
-
-      const entry = entries
+      // Auto-detect entry by file presence. We try TS first (the more
+      // common scaffolding output) then Python — first hit wins.
+      const candidates = [
+        "agent.ts",
+        "agent.js",
+        "agent.mjs",
+        "agent.cjs",
+        "agent.py",
+      ];
+      const entry = candidates
         .map((f) => path.join(cwd, f))
         .find((f) => fs.existsSync(f));
 
       if (entry) {
         const { spawn } = await import("node:child_process");
         const env = { ...process.env };
-        if (opts.port) env["WEBHOOK_PORT"] = String(opts.port);
+        if (opts.port) env["ZYND_SERVER_PORT"] = String(opts.port);
 
         let cmd: string;
         let args: string[];
@@ -345,15 +469,7 @@ export function registerAgentCommand(program: Command): void {
       try {
         const { ZyndAIAgent } = await import("../agent.js");
         const { AgentConfigSchema } = await import("../types.js");
-        const config = AgentConfigSchema.parse({
-          name,
-          description: (raw["description"] as string) ?? "",
-          category: (raw["category"] as string) ?? "general",
-          tags: (raw["tags"] as string[]) ?? [],
-          registryUrl:
-            (raw["registry_url"] as string) ?? "https://zns01.zynd.ai",
-          webhookPort: port,
-        });
+        const config = AgentConfigSchema.parse(configFromConfigJson(raw, port));
         const agentInstance = new ZyndAIAgent(config);
         agentInstance.setCustomAgent((input: string) => `Echo: ${input}`);
         await agentInstance.start();

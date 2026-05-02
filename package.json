@@ -1,6 +1,6 @@
 {
   "name": "zyndai",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Multi-framework AI agent SDK for the Zynd AI Network. Ed25519 Identity, Agent Discovery, HTTP Webhooks, Agent Cards, and x402 Micropayments.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -35,10 +35,10 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@noble/ciphers": "^1.2.0",
+    "@noble/curves": "^1.8.0",
     "@noble/ed25519": "^2.2.0",
     "@noble/hashes": "^1.7.0",
-    "@noble/curves": "^1.8.0",
-    "@noble/ciphers": "^1.2.0",
     "@x402/core": "^2.10.0",
     "@x402/evm": "^2.10.0",
     "chalk": "^4.1.2",
