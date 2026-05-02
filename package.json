@@ -1,7 +1,7 @@
 {
   "name": "zyndai",
-  "version": "0.2.6",
-  "description": "Multi-framework AI agent SDK for the Zynd AI Network. Ed25519 Identity, Agent Discovery, HTTP Webhooks, Agent Cards, and x402 Micropayments.",
+  "version": "0.3.0",
+  "description": "Multi-framework AI agent SDK for the Zynd AI Network. Ed25519 identity, agent discovery, A2A protocol communication, agent cards, and x402 micropayments.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
