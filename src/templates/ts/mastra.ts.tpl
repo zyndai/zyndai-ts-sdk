@@ -1,11 +1,6 @@
-/**
- * __AGENT_NAME__ — Mastra Agent on the ZyndAI Network
+/** __AGENT_NAME__ — Mastra Agent on the Zynd network.
  *
- * Install dependencies:
- *   npm install zyndai @mastra/core @ai-sdk/openai zod
- *
- * Run:
- *   npx tsx agent.ts
+ * npm install zyndai @mastra/core @ai-sdk/openai zod
  */
 
 import "dotenv/config";
@@ -31,12 +26,10 @@ const _config: Record<string, any> = fs.existsSync("agent.config.json")
 
 const helloTool = createTool({
   id: "hello",
-  description: "A simple demo tool. Replace with your own tools.",
+  description: "A simple demo tool. Replace with your own.",
   inputSchema: z.object({ query: z.string() }),
   outputSchema: z.object({ greeting: z.string() }),
-  execute: async ({ context }) => ({
-    greeting: `Hello! You asked: ${context.query}`,
-  }),
+  execute: async ({ context }) => ({ greeting: `Hello! You asked: ${context.query}` }),
 });
 
 function createAgent() {
@@ -51,14 +44,12 @@ function createAgent() {
 async function main() {
   const agentConfig = AgentConfigSchema.parse({
     name: _config.name ?? "__AGENT_NAME__",
-    description:
-      _config.description ??
-      "__AGENT_NAME__ — a Mastra agent on the Zynd network.",
+    description: _config.description ?? "__AGENT_NAME__ — a Mastra agent on the Zynd network.",
     version: _config.version ?? "0.1.0",
     category: _config.category ?? "general",
     tags: _config.tags ?? ["mastra"],
     serverHost: _config.server_host ?? "0.0.0.0",
-    serverPort: Number(process.env.ZYND_SERVER_PORT ?? _config.server_port ?? 5000),
+    serverPort: Number(process.env.ZYND_SERVER_PORT ?? _config.server_port ?? _config.webhook_port ?? 5000),
     authMode: _config.auth_mode ?? "permissive",
     registryUrl: resolveRegistryUrl({ fromConfigFile: _config.registry_url }),
     keypairPath: process.env.ZYND_AGENT_KEYPAIR_PATH ?? _config.keypair_path,
@@ -75,13 +66,11 @@ async function main() {
     outputModel: ResponsePayload,
     maxBodyBytes: MAX_FILE_SIZE_BYTES,
   });
-  const mastraAgent = createAgent();
-  zyndAgent.setMastraAgent(mastraAgent as any);
+  zyndAgent.setMastraAgent(createAgent() as any);
 
   zyndAgent.onMessage(async (input: HandlerInput, task: TaskHandle) => {
     try {
-      const response = await zyndAgent.invoke(input.message.content);
-      return { response };
+      return { response: await zyndAgent.invoke(input.message.content) };
     } catch (e) {
       return task.fail(e instanceof Error ? e.message : String(e));
     }
@@ -89,7 +78,7 @@ async function main() {
 
   await zyndAgent.start();
 
-  console.log(`\n__AGENT_NAME__ is running (Mastra, A2A)`);
+  console.log(`\n__AGENT_NAME__ is running (Mastra)`);
   console.log(`A2A endpoint: ${zyndAgent.a2aUrl}`);
   console.log(`Agent card:   ${zyndAgent.cardUrl}`);
 

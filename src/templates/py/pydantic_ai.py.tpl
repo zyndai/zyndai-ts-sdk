@@ -1,11 +1,6 @@
-"""
-__AGENT_NAME__ — PydanticAI Agent on the Zynd network (A2A protocol).
+"""__AGENT_NAME__ — PydanticAI Agent on the Zynd network.
 
-Install dependencies:
-    pip install zyndai-agent pydantic-ai
-
-Run:
-    python agent.py
+pip install zyndai-agent pydantic-ai
 """
 
 from __future__ import annotations
@@ -19,18 +14,13 @@ from collections import OrderedDict
 
 from dotenv import load_dotenv
 
-from zyndai_agent import (
-    AgentConfig,
-    ZyndAIAgent,
-    resolve_registry_url,
-)
+from zyndai_agent import AgentConfig, ZyndAIAgent, resolve_registry_url
 from zyndai_agent.a2a.server import HandlerInput, TaskHandle
 
 from payload import RequestPayload, ResponsePayload, MAX_FILE_SIZE_BYTES
 
 load_dotenv()
 
-# Load agent.config.json for runtime settings
 _config: dict = {}
 if os.path.exists("agent.config.json"):
     with open("agent.config.json") as _f:
@@ -41,14 +31,9 @@ def build_pydantic_ai_agent():
     from pydantic_ai import Agent, RunContext
     from pydantic_ai.models.openai import OpenAIModel
 
-    model = OpenAIModel("gpt-4o-mini")
-
     agent = Agent(
-        model,
-        system_prompt=(
-            "You are __AGENT_NAME__, a helpful AI assistant. Use the search "
-            "tool when you don't know something — do not say 'I don't know'."
-        ),
+        OpenAIModel("gpt-4o-mini"),
+        system_prompt="You are __AGENT_NAME__, a helpful AI assistant.",
         result_type=str,
     )
 
@@ -60,21 +45,11 @@ def build_pydantic_ai_agent():
     return agent
 
 
-# ----------------------------------------------------------------------------
-# Per-conversation memory (keyed on contextId — see langchain.py for rationale)
-# ----------------------------------------------------------------------------
-
 CTX_HISTORY_TURNS = 10
 CTX_IDLE_SECONDS = 60 * 60
 
 
 class ConversationStore:
-    """Stores PydanticAI message history per A2A contextId.
-
-    PydanticAI's `Agent.run_sync(prompt, message_history=...)` accepts a
-    list of ModelMessage instances; we round-trip those between calls.
-    """
-
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._convos: OrderedDict[str, list] = OrderedDict()
@@ -104,15 +79,12 @@ class ConversationStore:
 if __name__ == "__main__":
     agent_config = AgentConfig(
         name=_config.get("name", "__AGENT_NAME__"),
-        description=_config.get(
-            "description",
-            "__AGENT_NAME__ — a PydanticAI agent on the Zynd network.",
-        ),
+        description=_config.get("description", "__AGENT_NAME__ — a PydanticAI agent on the Zynd network."),
         version=_config.get("version", "0.1.0"),
         category=_config.get("category", "general"),
         tags=_config.get("tags", ["pydantic-ai"]),
         server_host=_config.get("server_host", "0.0.0.0"),
-        server_port=int(os.environ.get("ZYND_SERVER_PORT", _config.get("server_port", 5000))),
+        server_port=int(os.environ.get("ZYND_SERVER_PORT") or _config.get("server_port") or _config.get("webhook_port") or 5000),
         auth_mode=_config.get("auth_mode", "permissive"),
         registry_url=resolve_registry_url(from_config_file=_config.get("registry_url")),
         keypair_path=os.environ.get("ZYND_AGENT_KEYPAIR_PATH", _config.get("keypair_path")),
@@ -150,18 +122,9 @@ if __name__ == "__main__":
         ctx_id = task.context_id
         history = conversations.get(ctx_id)
         try:
-            result = pydantic_agent.run_sync(
-                inbound.message.content,
-                message_history=history,
-            )
+            result = pydantic_agent.run_sync(inbound.message.content, message_history=history)
             response = str(getattr(result, "data", result))
-            # PydanticAI's result exposes the full message history including
-            # the new exchange via .all_messages().
-            new_history = (
-                result.all_messages()
-                if hasattr(result, "all_messages")
-                else history
-            )
+            new_history = result.all_messages() if hasattr(result, "all_messages") else history
             conversations.set(ctx_id, new_history)
             return {"response": response}
         except Exception as e:
@@ -170,7 +133,7 @@ if __name__ == "__main__":
     zynd_agent.on_message(handle)
     zynd_agent.start()
 
-    print(f"\n__AGENT_NAME__ is running (PydanticAI, A2A)")
+    print(f"\n__AGENT_NAME__ is running (PydanticAI)")
     print(f"A2A endpoint: {zynd_agent.a2a_url}")
     print(f"Agent card:   {zynd_agent.card_url}")
 

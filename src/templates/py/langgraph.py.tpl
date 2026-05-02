@@ -1,11 +1,6 @@
-"""
-__AGENT_NAME__ — LangGraph Agent on the Zynd network (A2A protocol).
+"""__AGENT_NAME__ — LangGraph Agent on the Zynd network.
 
-Install dependencies:
-    pip install zyndai-agent langchain-openai langchain-community langgraph
-
-Run:
-    python agent.py
+pip install zyndai-agent langchain-openai langchain-community langgraph
 """
 
 from __future__ import annotations
@@ -19,11 +14,7 @@ from collections import OrderedDict
 
 from dotenv import load_dotenv
 
-from zyndai_agent import (
-    AgentConfig,
-    ZyndAIAgent,
-    resolve_registry_url,
-)
+from zyndai_agent import AgentConfig, ZyndAIAgent, resolve_registry_url
 from zyndai_agent.a2a.server import HandlerInput, TaskHandle
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -36,33 +27,19 @@ from payload import RequestPayload, ResponsePayload, MAX_FILE_SIZE_BYTES
 
 load_dotenv()
 
-# Load agent.config.json for runtime settings
 _config: dict = {}
 if os.path.exists("agent.config.json"):
     with open("agent.config.json") as _f:
         _config = json.load(_f)
 
 
-# ----------------------------------------------------------------------------
-# LangGraph
-# ----------------------------------------------------------------------------
-
-
 def build_langgraph_agent():
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-
-    search_tool = TavilySearchResults(max_results=3)
-    tools = [search_tool]
+    tools = [TavilySearchResults(max_results=3)]
     llm_with_tools = llm.bind_tools(tools)
 
     def agent_node(state: MessagesState):
-        system = SystemMessage(
-            content=(
-                "You are __AGENT_NAME__, a helpful AI assistant. Use the "
-                "search tool when you don't know something — do not say "
-                "'I don't know'."
-            )
-        )
+        system = SystemMessage(content="You are __AGENT_NAME__, a helpful AI assistant. Use the search tool when you don't know something.")
         return {"messages": [llm_with_tools.invoke([system] + state["messages"])]}
 
     graph = StateGraph(MessagesState)
@@ -73,10 +50,6 @@ def build_langgraph_agent():
     graph.add_edge("tools", "agent")
     return graph.compile()
 
-
-# ----------------------------------------------------------------------------
-# Per-conversation memory (keyed on contextId — see langchain.py for rationale)
-# ----------------------------------------------------------------------------
 
 CTX_HISTORY_TURNS = 10
 CTX_IDLE_SECONDS = 60 * 60
@@ -112,23 +85,15 @@ class ConversationStore:
                 self._last_seen.pop(c, None)
 
 
-# ----------------------------------------------------------------------------
-# Main
-# ----------------------------------------------------------------------------
-
-
 if __name__ == "__main__":
     agent_config = AgentConfig(
         name=_config.get("name", "__AGENT_NAME__"),
-        description=_config.get(
-            "description",
-            "__AGENT_NAME__ — a LangGraph agent on the Zynd network.",
-        ),
+        description=_config.get("description", "__AGENT_NAME__ — a LangGraph agent on the Zynd network."),
         version=_config.get("version", "0.1.0"),
         category=_config.get("category", "general"),
         tags=_config.get("tags", ["langgraph"]),
         server_host=_config.get("server_host", "0.0.0.0"),
-        server_port=int(os.environ.get("ZYND_SERVER_PORT", _config.get("server_port", 5000))),
+        server_port=int(os.environ.get("ZYND_SERVER_PORT") or _config.get("server_port") or _config.get("webhook_port") or 5000),
         auth_mode=_config.get("auth_mode", "permissive"),
         registry_url=resolve_registry_url(from_config_file=_config.get("registry_url")),
         keypair_path=os.environ.get("ZYND_AGENT_KEYPAIR_PATH", _config.get("keypair_path")),
@@ -166,20 +131,9 @@ if __name__ == "__main__":
         ctx_id = task.context_id
         history = conversations.get(ctx_id)
         try:
-            # LangGraph expects MessagesState — pre-pend prior turns then
-            # add the new user message via zynd_agent.invoke(text).
-            # zynd_agent.invoke wraps that internally; we pass chat_history
-            # via the graph's state dict.
-            result = graph.invoke(
-                {"messages": history + [HumanMessage(content=inbound.message.content)]}
-            )
+            result = graph.invoke({"messages": history + [HumanMessage(content=inbound.message.content)]})
             messages = result.get("messages") if isinstance(result, dict) else None
-            if messages:
-                last = messages[-1]
-                response = getattr(last, "content", str(last))
-            else:
-                response = str(result)
-
+            response = getattr(messages[-1], "content", str(messages[-1])) if messages else str(result)
             conversations.append(ctx_id, inbound.message.content, response)
             return {"response": response}
         except Exception as e:
@@ -188,7 +142,7 @@ if __name__ == "__main__":
     zynd_agent.on_message(handle)
     zynd_agent.start()
 
-    print(f"\n__AGENT_NAME__ is running (LangGraph, A2A)")
+    print(f"\n__AGENT_NAME__ is running (LangGraph)")
     print(f"A2A endpoint: {zynd_agent.a2a_url}")
     print(f"Agent card:   {zynd_agent.card_url}")
 

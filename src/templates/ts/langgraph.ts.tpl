@@ -1,11 +1,6 @@
-/**
- * __AGENT_NAME__ — LangGraph.js Agent on the Zynd network (A2A protocol).
+/** __AGENT_NAME__ — LangGraph.js Agent on the Zynd network.
  *
- * Install dependencies:
- *   npm install zyndai @langchain/openai @langchain/community @langchain/core @langchain/langgraph
- *
- * Run:
- *   npx tsx agent.ts
+ * npm install zyndai @langchain/openai @langchain/community @langchain/core @langchain/langgraph
  */
 
 import "dotenv/config";
@@ -20,11 +15,7 @@ import {
 
 import { ChatOpenAI } from "@langchain/openai";
 import { TavilySearchResults } from "@langchain/community/tools/tavily_search";
-import {
-  StateGraph,
-  MessagesAnnotation,
-  START,
-} from "@langchain/langgraph";
+import { StateGraph, MessagesAnnotation, START } from "@langchain/langgraph";
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 
 import { RequestPayload, ResponsePayload, MAX_FILE_SIZE_BYTES } from "./payload.js";
@@ -35,42 +26,35 @@ const _config: Record<string, any> = fs.existsSync("agent.config.json")
 
 function createAgent() {
   const llm = new ChatOpenAI({ model: "gpt-4o-mini", temperature: 0 });
-
-  const searchTool = new TavilySearchResults({ maxResults: 3 });
-  const tools = [searchTool];
+  const tools = [new TavilySearchResults({ maxResults: 3 })];
   const llmWithTools = llm.bindTools(tools);
 
   const agentNode = async (state: typeof MessagesAnnotation.State) => {
-    const systemMessage = {
-      role: "system",
-      content: "You are __AGENT_NAME__, a helpful AI assistant.",
-    };
-    const messages = [systemMessage, ...state.messages];
-    const response = await llmWithTools.invoke(messages);
-    return { messages: [response] };
+    const messages = [
+      { role: "system", content: "You are __AGENT_NAME__, a helpful AI assistant." },
+      ...state.messages,
+    ];
+    return { messages: [await llmWithTools.invoke(messages)] };
   };
 
-  const graph = new StateGraph(MessagesAnnotation)
+  return new StateGraph(MessagesAnnotation)
     .addNode("agent", agentNode)
     .addNode("tools", new ToolNode(tools))
     .addEdge(START, "agent")
     .addConditionalEdges("agent", toolsCondition)
-    .addEdge("tools", "agent");
-
-  return graph.compile();
+    .addEdge("tools", "agent")
+    .compile();
 }
 
 async function main() {
   const agentConfig = AgentConfigSchema.parse({
     name: _config.name ?? "__AGENT_NAME__",
-    description:
-      _config.description ??
-      "__AGENT_NAME__ — a LangGraph.js agent on the Zynd network.",
+    description: _config.description ?? "__AGENT_NAME__ — a LangGraph.js agent on the Zynd network.",
     version: _config.version ?? "0.1.0",
     category: _config.category ?? "general",
     tags: _config.tags ?? ["langgraph"],
     serverHost: _config.server_host ?? "0.0.0.0",
-    serverPort: Number(process.env.ZYND_SERVER_PORT ?? _config.server_port ?? 5000),
+    serverPort: Number(process.env.ZYND_SERVER_PORT ?? _config.server_port ?? _config.webhook_port ?? 5000),
     authMode: _config.auth_mode ?? "permissive",
     registryUrl: resolveRegistryUrl({ fromConfigFile: _config.registry_url }),
     keypairPath: process.env.ZYND_AGENT_KEYPAIR_PATH ?? _config.keypair_path,
@@ -87,13 +71,11 @@ async function main() {
     outputModel: ResponsePayload,
     maxBodyBytes: MAX_FILE_SIZE_BYTES,
   });
-  const compiled = createAgent();
-  zyndAgent.setLanggraphAgent(compiled);
+  zyndAgent.setLanggraphAgent(createAgent());
 
   zyndAgent.onMessage(async (input: HandlerInput, task: TaskHandle) => {
     try {
-      const response = await zyndAgent.invoke(input.message.content);
-      return { response };
+      return { response: await zyndAgent.invoke(input.message.content) };
     } catch (e) {
       return task.fail(e instanceof Error ? e.message : String(e));
     }
@@ -101,7 +83,7 @@ async function main() {
 
   await zyndAgent.start();
 
-  console.log(`\n__AGENT_NAME__ is running (LangGraph.js, A2A)`);
+  console.log(`\n__AGENT_NAME__ is running (LangGraph.js)`);
   console.log(`A2A endpoint: ${zyndAgent.a2aUrl}`);
   console.log(`Agent card:   ${zyndAgent.cardUrl}`);
 

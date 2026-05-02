@@ -1,18 +1,7 @@
-"""
-__SERVICE_NAME__ — Service on the Zynd network (A2A protocol).
+"""__SERVICE_NAME__ — Service on the Zynd network."""
 
-Install dependencies:
-    pip install zyndai-agent
-
-Run:
-    python service.py
-"""
-
-from zyndai_agent import (
-    ServiceConfig,
-    ZyndService,
-    resolve_registry_url,
-)
+from zyndai_agent import ServiceConfig, ZyndService, resolve_registry_url
+from zyndai_agent.a2a.server import HandlerInput, TaskHandle
 
 from payload import RequestPayload, ResponsePayload, MAX_FILE_SIZE_BYTES
 
@@ -29,17 +18,6 @@ if os.path.exists("service.config.json"):
         _config = json.load(_f)
 
 
-def handle_request(input_text: str) -> str:
-    """
-    Your service logic here.
-
-    Default contract per payload.py: input is the `prompt`/`content` field as
-    a string; return value is wrapped into ``{"response": ...}`` to match
-    ``ResponsePayload``. Replace this with your own implementation.
-    """
-    return f"Hello from __SERVICE_NAME__! You sent: {input_text}"
-
-
 if __name__ == "__main__":
     config = ServiceConfig(
         name=_config.get("name", "__SERVICE_NAME__"),
@@ -50,7 +28,7 @@ if __name__ == "__main__":
         service_endpoint=_config.get("service_endpoint"),
         openapi_url=_config.get("openapi_url"),
         server_host=_config.get("server_host", "0.0.0.0"),
-        server_port=int(os.environ.get("ZYND_SERVER_PORT", _config.get("server_port", 5000))),
+        server_port=int(os.environ.get("ZYND_SERVER_PORT") or _config.get("server_port") or _config.get("webhook_port") or 5000),
         auth_mode=_config.get("auth_mode", "permissive"),
         registry_url=resolve_registry_url(from_config_file=_config.get("registry_url")),
         keypair_path=os.environ.get("ZYND_SERVICE_KEYPAIR_PATH", _config.get("keypair_path")),
@@ -69,16 +47,13 @@ if __name__ == "__main__":
         max_body_bytes=MAX_FILE_SIZE_BYTES,
     )
 
-    # ZyndService.set_handler() takes a string-in / string-out callback. The
-    # SDK wraps it in an A2A handler internally — extracts text from the
-    # inbound message, calls your function, and ships the return value as the
-    # task's artifact. No need to touch task.history or call set_response
-    # manually.
-    service.set_handler(handle_request)
+    def handle(inbound: HandlerInput, task: TaskHandle):
+        return {"response": f"Hello from __SERVICE_NAME__! You sent: {inbound.message.content}"}
 
+    service.on_message(handle)
     service.start()
 
-    print(f"\n__SERVICE_NAME__ is running (A2A)")
+    print(f"\n__SERVICE_NAME__ is running")
     print(f"A2A endpoint: {service.a2a_url}")
     print(f"Agent card:   {service.card_url}")
 
