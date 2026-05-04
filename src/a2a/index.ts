@@ -81,8 +81,19 @@ export type {
   TaskHandle,
 } from "./server.js";
 
-export { A2AClient, A2AError, resolveA2AEndpoint } from "./client.js";
-export type { ClientOptions, CallOptions } from "./client.js";
+export {
+  A2AClient,
+  A2AError,
+  resolveA2AEndpoint,
+  resolveTransport,
+  resolveTransportFromCard,
+} from "./client.js";
+export type {
+  ClientOptions,
+  CallOptions,
+  A2ATransport,
+  ResolvedTransport,
+} from "./client.js";
 
 export { buildAgentCard, signAgentCard } from "./card.js";
 export type {

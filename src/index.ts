@@ -81,6 +81,8 @@ export {
   A2AClient,
   A2AError,
   resolveA2AEndpoint,
+  resolveTransport,
+  resolveTransportFromCard,
   TaskStore,
   signMessage,
   verifyMessage,
@@ -147,6 +149,8 @@ export type {
   A2AServerOptions,
   ClientOptions,
   CallOptions,
+  A2ATransport,
+  ResolvedTransport,
   BuildCardOptions,
   AgentCardSkill,
   AgentCardProvider,
@@ -155,4 +159,4 @@ export type {
   SignedAgentCard,
 } from "./a2a/index.js";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.5.0";

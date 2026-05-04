@@ -115,17 +115,27 @@ export function fromA2AMessage(
     (dataMerge["content"] as string | undefined) ||
     (dataMerge["prompt"] as string | undefined) ||
     "";
+
+  // Compose the payload object the handler will see. We only inject
+  // `content`/`prompt` when there's actual text — otherwise a service
+  // that declares a strict input_schema (e.g. `{ url: string }`) would
+  // see noise like `{content: "", prompt: "", in_reply_to: null}` and
+  // reject the request. Same logic for `attachments` (skip when empty)
+  // and `in_reply_to` (skip when null).
+  const senderId =
+    (message.metadata?.["x-zynd-auth"] as { entity_id?: string } | undefined)
+      ?.entity_id ?? "unknown";
+
   const payloadDict: Record<string, unknown> = {
     ...dataMerge,
-    content: textValue,
-    prompt: textValue,
-    attachments,
-    sender_id:
-      (message.metadata?.["x-zynd-auth"] as { entity_id?: string } | undefined)
-        ?.entity_id ?? "unknown",
+    ...(textValue ? { content: textValue, prompt: textValue } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
+    sender_id: senderId,
     message_id: message.messageId,
-    conversation_id: message.contextId,
-    in_reply_to: message.taskId ?? null,
+    ...(message.contextId !== undefined
+      ? { conversation_id: message.contextId }
+      : {}),
+    ...(message.taskId !== undefined ? { in_reply_to: message.taskId } : {}),
   };
 
   // Validate when a payload model is supplied. We allow the model to be a

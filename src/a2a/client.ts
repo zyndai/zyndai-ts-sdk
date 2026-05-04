@@ -36,6 +36,12 @@ export interface CallOptions {
   /** A2A endpoint URL — usually the agent card's `url` or the well-known
    *  agent's `/a2a/v1`. */
   url: string;
+  /**
+   * Wire transport. Defaults to "JSONRPC". Pass "HTTP+JSON" to send a plain
+   * `MessageSendParams` body to the endpoint and parse the response as a
+   * Task or Message directly (no JSON-RPC envelope).
+   */
+  transport?: A2ATransport;
   /** Free-form text part. */
   text?: string;
   /** Structured DataPart payload. */
@@ -61,6 +67,9 @@ export class A2AClient {
 
   /** Synchronous request — returns the final Task (or throws). */
   async sync(callOpts: CallOptions): Promise<ATask> {
+    const transport = callOpts.transport ?? "JSONRPC";
+    if (transport === "HTTP+JSON") return this.syncHttpJson(callOpts);
+
     const message = this.buildMessage(callOpts);
     const rpc = {
       jsonrpc: "2.0" as const,
@@ -95,15 +104,53 @@ export class A2AClient {
     if (result && typeof result === "object" && "kind" in result && result.kind === "task") {
       return result as ATask;
     }
-    // The server might also return a bare Message (when no task was created
-    // and the response is a one-shot). Wrap it in a synthetic completed Task
-    // so callers always see a uniform shape.
+    return this.wrapMessageAsTask(result as Message, callOpts.contextId);
+  }
+
+  /**
+   * HTTP+JSON transport — POSTs `MessageSendParams` directly (no JSON-RPC
+   * envelope) and expects a Task or Message body back. Used when the agent
+   * card advertises `transport: "HTTP+JSON"` for the picked interface.
+   */
+  private async syncHttpJson(callOpts: CallOptions): Promise<ATask> {
+    const message = this.buildMessage(callOpts);
+    const params = { message, configuration: { blocking: callOpts.blocking ?? true } };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), callOpts.timeoutMs ?? 5 * 60 * 1000);
+
+    let resp: globalThis.Response;
+    try {
+      resp = await fetch(callOpts.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(params),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "(unreadable)");
+      throw new Error(`A2A sync HTTP+JSON ${resp.status}: ${body}`);
+    }
+
+    const result = (await resp.json()) as ATask | Message;
+    if (result && typeof result === "object" && "kind" in result && result.kind === "task") {
+      return result as ATask;
+    }
+    return this.wrapMessageAsTask(result as Message, callOpts.contextId);
+  }
+
+  private wrapMessageAsTask(msg: Message, contextId?: string): ATask {
+    // Some servers respond with a bare Message instead of a Task — wrap it
+    // in a synthetic completed Task so callers always see a uniform shape.
     return {
       kind: "task",
       id: randomUUID(),
-      contextId: callOpts.contextId ?? randomUUID(),
+      contextId: contextId ?? randomUUID(),
       status: { state: "completed" },
-      history: [result as Message],
+      history: [msg],
       artifacts: [],
     };
   }
@@ -279,8 +326,62 @@ const AgentCardEndpointSchema = z.object({
     .optional(),
 });
 
-/** Fetch the agent card and return its primary A2A JSON-RPC URL. */
-export async function resolveA2AEndpoint(cardUrl: string): Promise<string> {
+/** Canonical transports per the A2A spec the SDK supports as a client. */
+export type A2ATransport = "JSONRPC" | "HTTP+JSON";
+
+export interface ResolvedTransport {
+  transport: A2ATransport;
+  url: string;
+}
+
+/**
+ * Pick the transport+URL for an outbound call given a card payload and an
+ * optional preference. `prefer === "auto"` (or omitted) follows the card's
+ * `preferredTransport`; otherwise the named transport is matched against
+ * `url`/`additionalInterfaces` and we throw if it isn't advertised.
+ */
+export function resolveTransportFromCard(
+  card: unknown,
+  prefer: A2ATransport | "auto" = "auto",
+): ResolvedTransport {
+  const parsed = AgentCardEndpointSchema.safeParse(card);
+  if (!parsed.success) throw new Error("agent card missing required transport fields");
+  const data = parsed.data;
+
+  const ifaces: Array<{ transport: A2ATransport; url: string }> = [];
+  const cardPreferred = normalizeTransport(data.preferredTransport ?? "JSONRPC");
+  if (data.url && cardPreferred) ifaces.push({ transport: cardPreferred, url: data.url });
+  for (const iface of data.additionalInterfaces ?? []) {
+    const t = normalizeTransport(iface.transport);
+    if (t) ifaces.push({ transport: t, url: iface.url });
+  }
+  if (ifaces.length === 0) throw new Error("no supported transport advertised on agent card");
+
+  if (prefer === "auto") return ifaces[0]!;
+  const match = ifaces.find((i) => i.transport === prefer);
+  if (!match) {
+    throw new Error(
+      `transport '${prefer}' not advertised; available: ${ifaces.map((i) => i.transport).join(", ")}`,
+    );
+  }
+  return match;
+}
+
+function normalizeTransport(t: string): A2ATransport | null {
+  const up = t.trim().toUpperCase();
+  if (up === "JSONRPC" || up === "JSON-RPC" || up === "") return "JSONRPC";
+  if (up === "HTTP+JSON" || up === "HTTPJSON" || up === "HTTP_JSON") return "HTTP+JSON";
+  return null;
+}
+
+/**
+ * Fetch a well-known agent card document then resolve its transport.
+ * Pass `prefer` to force a specific transport; default follows the card.
+ */
+export async function resolveTransport(
+  cardUrl: string,
+  prefer: A2ATransport | "auto" = "auto",
+): Promise<ResolvedTransport> {
   const normalized = cardUrl.endsWith(".json")
     ? cardUrl
     : `${cardUrl.replace(/\/+$/, "")}/.well-known/agent-card.json`;
@@ -288,15 +389,14 @@ export async function resolveA2AEndpoint(cardUrl: string): Promise<string> {
   const resp = await fetch(normalized, { method: "GET" });
   if (!resp.ok) throw new Error(`agent-card fetch HTTP ${resp.status}: ${normalized}`);
   const card = await resp.json();
-  const parsed = AgentCardEndpointSchema.safeParse(card);
-  if (!parsed.success) throw new Error("agent card missing required transport fields");
+  return resolveTransportFromCard(card, prefer);
+}
 
-  const data = parsed.data;
-  const preferred = (data.preferredTransport ?? "JSONRPC").toUpperCase();
-  if (data.url && (preferred === "JSONRPC" || preferred === "")) return data.url;
-  for (const iface of data.additionalInterfaces ?? []) {
-    if (iface.transport.toUpperCase() === "JSONRPC") return iface.url;
-  }
-  if (data.url) return data.url;
-  throw new Error("no JSON-RPC endpoint advertised on agent card");
+/**
+ * Back-compat wrapper. Returns the JSON-RPC endpoint URL only — callers that
+ * need transport awareness should use `resolveTransport`.
+ */
+export async function resolveA2AEndpoint(cardUrl: string): Promise<string> {
+  const r = await resolveTransport(cardUrl, "JSONRPC");
+  return r.url;
 }
