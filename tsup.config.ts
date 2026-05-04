@@ -46,6 +46,12 @@ export default defineConfig([
     outDir: "dist/cli",
     sourcemap: true,
     noExternal: [/.*/],
+    // jszip uses dynamic require()s (lie, setimmediate, pako, readable-stream)
+    // that esbuild can't statically trace, so leaving it bundled fails with
+    // "Could not resolve". jszip + its transitives are real runtime deps —
+    // declared in package.json and resolved from node_modules at install time
+    // — so excluding them from the bundle is the right call.
+    external: ["jszip"],
     platform: "node",
     async onSuccess() {
       copyTemplates();
