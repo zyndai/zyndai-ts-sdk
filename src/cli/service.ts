@@ -304,7 +304,10 @@ export function registerServiceCommand(program: Command): void {
         let cmd: string;
         let args: string[];
         if (entry.endsWith(".ts")) {
-          cmd = "npx";
+          // On Windows, `npx` is a `.cmd` shim. Node's child_process.spawn
+          // does not auto-resolve PATHEXT, so we must name it explicitly or
+          // it fails with `spawn npx ENOENT`.
+          cmd = process.platform === "win32" ? "npx.cmd" : "npx";
           args = ["tsx", entry];
         } else if (entry.endsWith(".py")) {
           cmd = process.platform === "win32" ? "python" : "python3";
