@@ -12,6 +12,7 @@ import { registerAuthCommand } from "./auth.js";
 import { registerAgentCommand } from "./agent.js";
 import { registerServiceCommand } from "./service.js";
 import { registerDeployCommand } from "./deploy.js";
+import { registerNameCommand } from "./name.js";
 
 // Note: `zynd init` was removed. Developer identities are now created
 // exclusively through `zynd auth login --registry <url>` — the registry
@@ -39,5 +40,6 @@ registerAuthCommand(program);
 registerAgentCommand(program);
 registerServiceCommand(program);
 registerDeployCommand(program);
+registerNameCommand(program);
 
 program.parse();

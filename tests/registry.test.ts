@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { generateKeypair } from "../src/identity";
-import { canonicalJson } from "../src/entity-card";
+import { canonicalJson } from "../src/a2a/canonical";
 import { sign } from "../src/identity";
 import {
   registerEntity,
+  registerName,
   getEntity,
   updateEntity,
   deleteEntity,
@@ -510,6 +511,158 @@ describe("getTags", () => {
       new Response("error", { status: 500 })
     );
     await expect(getTags(REGISTRY)).rejects.toThrow("HTTP 500");
+  });
+});
+
+describe("registerName", () => {
+  it("sends signed POST to /v1/names and returns fqan", async () => {
+    const devKp = generateKeypair();
+    mockFetchOnce({ fqan: "registry.example.com/alice/my-agent", entity_id: "zns:abc123", message: "name registered" }, 201);
+
+    const fqan = await registerName({
+      registryUrl: REGISTRY,
+      developerKeypair: devKp,
+      developerHandle: "alice",
+      entityId: "zns:abc123",
+      entityName: "my-agent",
+      version: "1.0.0",
+    });
+
+    expect(fqan).toBe("registry.example.com/alice/my-agent");
+
+    const [url, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${REGISTRY}/v1/names`);
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+
+    const sent = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(sent["developer_handle"]).toBe("alice");
+    expect(sent["entity_id"]).toBe("zns:abc123");
+    expect(sent["entity_name"]).toBe("my-agent");
+    expect(sent["version"]).toBe("1.0.0");
+    expect(typeof sent["signature"]).toBe("string");
+    expect((sent["signature"] as string).startsWith("ed25519:")).toBe(true);
+  });
+
+  it("signature is over canonical JSON with sorted keys and null capability_tags", async () => {
+    const devKp = generateKeypair();
+    mockFetchOnce({ fqan: "registry.example.com/alice/my-agent" }, 201);
+
+    await registerName({
+      registryUrl: REGISTRY,
+      developerKeypair: devKp,
+      developerHandle: "alice",
+      entityId: "zns:abc123",
+      entityName: "my-agent",
+      version: "1.0.0",
+    });
+
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
+    const sent = JSON.parse(init.body as string) as Record<string, unknown>;
+
+    // Must match Go's json.Marshal on map[string]interface{} — keys sorted alphabetically,
+    // capability_tags: null when not provided
+    const expectedSignable = canonicalJson({
+      capability_tags: null,
+      developer_handle: "alice",
+      entity_id: "zns:abc123",
+      entity_name: "my-agent",
+      version: "1.0.0",
+    });
+    const expectedSig = sign(devKp.privateKeyBytes, new TextEncoder().encode(expectedSignable));
+    expect(sent["signature"]).toBe(expectedSig);
+  });
+
+  it("includes capability_tags in body when provided, uses array in signable", async () => {
+    const devKp = generateKeypair();
+    mockFetchOnce({ fqan: "registry.example.com/alice/my-agent" }, 201);
+
+    await registerName({
+      registryUrl: REGISTRY,
+      developerKeypair: devKp,
+      developerHandle: "alice",
+      entityId: "zns:abc123",
+      entityName: "my-agent",
+      capabilityTags: ["nlp", "search"],
+    });
+
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
+    const sent = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(sent["capability_tags"]).toEqual(["nlp", "search"]);
+
+    const expectedSignable = canonicalJson({
+      capability_tags: ["nlp", "search"],
+      developer_handle: "alice",
+      entity_id: "zns:abc123",
+      entity_name: "my-agent",
+      version: "",
+    });
+    const expectedSig = sign(devKp.privateKeyBytes, new TextEncoder().encode(expectedSignable));
+    expect(sent["signature"]).toBe(expectedSig);
+  });
+
+  it("falls back to derived fqan when registry omits it", async () => {
+    const devKp = generateKeypair();
+    mockFetchOnce({ message: "ok" }, 201);
+
+    const fqan = await registerName({
+      registryUrl: REGISTRY,
+      developerKeypair: devKp,
+      developerHandle: "alice",
+      entityId: "zns:abc123",
+      entityName: "my-agent",
+    });
+
+    expect(fqan).toBe("registry.example.com/alice/my-agent");
+  });
+
+  it("throws on 409 conflict", async () => {
+    const devKp = generateKeypair();
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "name already registered" }), { status: 409 })
+    );
+
+    await expect(
+      registerName({
+        registryUrl: REGISTRY,
+        developerKeypair: devKp,
+        developerHandle: "alice",
+        entityId: "zns:abc123",
+        entityName: "taken-name",
+      })
+    ).rejects.toThrow("HTTP 409");
+  });
+
+  it("throws on 401 bad signature", async () => {
+    const devKp = generateKeypair();
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "invalid signature" }), { status: 401 })
+    );
+
+    await expect(
+      registerName({
+        registryUrl: REGISTRY,
+        developerKeypair: devKp,
+        developerHandle: "alice",
+        entityId: "zns:abc123",
+        entityName: "my-agent",
+      })
+    ).rejects.toThrow("HTTP 401");
+  });
+
+  it("throws with context on network error", async () => {
+    const devKp = generateKeypair();
+    mockFetchErrorOnce("ECONNREFUSED");
+
+    await expect(
+      registerName({
+        registryUrl: REGISTRY,
+        developerKeypair: devKp,
+        developerHandle: "alice",
+        entityId: "zns:abc123",
+        entityName: "my-agent",
+      })
+    ).rejects.toThrow("registerName: network error");
   });
 });
 
