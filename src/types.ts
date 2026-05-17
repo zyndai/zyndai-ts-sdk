@@ -130,13 +130,19 @@ export interface AgentSearchResponse {
   category: string;
   tags: string[];
   capability_summary?: Record<string, unknown>;
-  entity_url: string;
+  url?: string;              // public entity endpoint (replaces service_endpoint)
+  entity_url?: string;       // kept for backward compatibility — same value as url
+  openapi_url?: string;
   home_registry: string;
   score: number;
   score_breakdown?: Record<string, number>;
   card?: Record<string, unknown>;
   status?: string;
   last_heartbeat?: string;
+  fqan?: string;
+  developer_handle?: string;
+  developer_id?: string;
+  entity_type?: string;
 }
 
 export interface SearchRequest {

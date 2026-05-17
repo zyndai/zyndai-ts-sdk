@@ -403,6 +403,74 @@ export async function checkEntityNameAvailable(
   };
 }
 
+export interface RegisterNameOpts {
+  registryUrl: string;
+  developerKeypair: Ed25519Keypair;
+  developerHandle: string;
+  entityId: string;
+  entityName: string;
+  version?: string;
+  capabilityTags?: string[];
+}
+
+// POST /v1/names — binds an entity to a FQAN under a developer handle.
+// Developer signs the binding payload with their private key.
+// The signable matches Go's json.Marshal on map[string]interface{} (keys sorted alphabetically).
+export async function registerName(opts: RegisterNameOpts): Promise<string> {
+  const {
+    registryUrl,
+    developerKeypair,
+    developerHandle,
+    entityId,
+    entityName,
+    version = "",
+    capabilityTags,
+  } = opts;
+
+  const signableObj: Record<string, unknown> = {
+    capability_tags: capabilityTags ?? null,
+    developer_handle: developerHandle,
+    entity_id: entityId,
+    entity_name: entityName,
+    version,
+  };
+  const signature = sign(developerKeypair.privateKeyBytes, canonicalJsonBytes(signableObj));
+
+  const body: Record<string, unknown> = {
+    developer_handle: developerHandle,
+    entity_id: entityId,
+    entity_name: entityName,
+    signature,
+    version,
+  };
+  if (capabilityTags && capabilityTags.length > 0) {
+    body["capability_tags"] = capabilityTags;
+  }
+
+  let resp: Response;
+  try {
+    resp = await fetch(`${registryUrl}/v1/names`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw new Error(`registerName: network error: ${String(err)}`, { cause: err });
+  }
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "(unreadable)");
+    throw new Error(`registerName: HTTP ${resp.status}: ${text}`);
+  }
+
+  const data = (await resp.json()) as { fqan?: string };
+  try {
+    return data.fqan ?? `${new URL(registryUrl).hostname}/${developerHandle}/${entityName}`;
+  } catch {
+    return `${developerHandle}/${entityName}`;
+  }
+}
+
 // GET /v1/categories — returns known entity categories.
 export async function getCategories(registryUrl: string): Promise<string[]> {
   const url = `${registryUrl}/v1/categories`;
