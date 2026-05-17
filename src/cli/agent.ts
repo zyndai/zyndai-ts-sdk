@@ -353,6 +353,17 @@ export function registerAgentCommand(program: Command): void {
           );
         }
 
+        // assets/ — default logo shipped with every new agent.
+        const assetsDir = path.join(cwd, "assets");
+        fs.mkdirSync(assetsDir, { recursive: true });
+        const logoDestPath = path.join(assetsDir, "logo.png");
+        if (!fs.existsSync(logoDestPath)) {
+          const logoSrc = path.join(templatesDir(), "assets", "default_logo.png");
+          if (fs.existsSync(logoSrc)) {
+            fs.copyFileSync(logoSrc, logoDestPath);
+          }
+        }
+
         console.log();
         console.log(chalk.green(`Agent "${name}" scaffolded (${LANGUAGE_LABELS[lang]}).`));
         console.log();
@@ -362,6 +373,7 @@ export function registerAgentCommand(program: Command): void {
         console.log(`  ${chalk.dim("Entry")}       agent.${ext}`);
         console.log(`  ${chalk.dim("Payload")}     payload.${ext}`);
         console.log(`  ${chalk.dim("Env")}         .env`);
+        console.log(`  ${chalk.dim("Logo")}        assets/logo.png`);
         console.log(
           `  ${chalk.dim("Keypair")}     ${identity.keypairPath}${identity.reusedExisting ? chalk.dim(" (reused)") : ""}`,
         );

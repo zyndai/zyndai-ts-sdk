@@ -21,7 +21,7 @@ function copyTemplates() {
       const outPath = path.join(outDir, entry.name);
       if (entry.isDirectory()) {
         walk(inPath, outPath);
-      } else if (entry.isFile() && entry.name.endsWith(".tpl")) {
+      } else if (entry.isFile() && (entry.name.endsWith(".tpl") || entry.name.endsWith(".png"))) {
         fs.copyFileSync(inPath, outPath);
       }
     }
