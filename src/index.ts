@@ -159,4 +159,7 @@ export type {
   SignedAgentCard,
 } from "./a2a/index.js";
 
+export { scanLogos } from "./logo.js";
+export type { AgentLogos, LogoVariant } from "./logo.js";
+
 export const VERSION = "0.5.0";
