@@ -27,6 +27,7 @@ import {
   type SignedAgentCard,
   type AgentCardProvider,
 } from "./a2a/card.js";
+import type { AgentLogos } from "./logo.js";
 import { getDeveloper } from "./registry.js";
 
 export interface ResolveKeypairConfig {
@@ -126,6 +127,7 @@ export interface BuildRuntimeCardArgs {
    * `resolveProviderFromDeveloper()` and cached for the process lifetime.
    */
   fallbackProvider?: AgentCardProvider;
+  logos?: AgentLogos | null;
 }
 
 /**
@@ -224,7 +226,9 @@ export function buildRuntimeCard(args: BuildRuntimeCardArgs): SignedAgentCard {
   // then nothing.
   const provider = pickProvider(config.provider, args.fallbackProvider);
   if (provider) cardOpts.provider = provider;
-  if (config.iconUrl) cardOpts.iconUrl = config.iconUrl;
+  const iconUrl = config.iconUrl ?? args.logos?.default;
+  if (iconUrl) cardOpts.iconUrl = iconUrl;
+  cardOpts.logos = args.logos ?? null;
   if (config.documentationUrl) cardOpts.documentationUrl = config.documentationUrl;
   if (config.capabilities) cardOpts.capabilities = config.capabilities;
   if (config.defaultInputModes) cardOpts.defaultInputModes = config.defaultInputModes;

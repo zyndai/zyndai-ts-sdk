@@ -17,6 +17,7 @@ import { sign as edSign } from "../identity.js";
 import type { Ed25519Keypair } from "../identity.js";
 import { canonicalBytes } from "./canonical.js";
 import { zodSchemaAdvertisement } from "../payload-schema.js";
+import type { AgentLogos } from "../logo.js";
 
 // -----------------------------------------------------------------------------
 // Card config — what callers (and the CLI) supply via *.config.json
@@ -95,6 +96,7 @@ export interface BuildCardOptions {
   category?: string;
   tags?: string[];
   summary?: string;
+  logos?: AgentLogos | null;
 
   /** A2A endpoint path. Default `/a2a/v1`. */
   a2aPath?: string;
@@ -117,6 +119,7 @@ export interface SignedAgentCard extends Record<string, unknown> {
   defaultInputModes: string[];
   defaultOutputModes: string[];
   skills: AgentCardSkill[];
+  logos: AgentLogos | null;
   signatures: Array<{
     protected: string;
     signature: string;
@@ -207,6 +210,7 @@ export function buildAgentCard(opts: BuildCardOptions): SignedAgentCard {
     defaultInputModes,
     defaultOutputModes,
     skills,
+    logos: opts.logos ?? null,
     securitySchemes,
     security,
     "x-zynd": xZynd,

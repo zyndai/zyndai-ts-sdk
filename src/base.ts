@@ -19,6 +19,7 @@ import {
   buildRuntimeCard,
   resolveProviderFromDeveloper,
 } from "./entity-card-loader.js";
+import { scanLogos, type AgentLogos } from "./logo.js";
 import type { AgentCardProvider } from "./a2a/card.js";
 import { X402PaymentProcessor } from "./payment.js";
 import { SearchAndDiscoveryManager } from "./search.js";
@@ -111,6 +112,8 @@ export class ZyndBase {
   private readonly validation: ValidationOptions;
   private readonly cardBuilder: () => SignedAgentCard;
   private resolvedProvider: AgentCardProvider | null = null;
+  private detectedLogos: AgentLogos | null = null;
+  private logosScanned = false;
   private heartbeatWs: WebSocket | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatStopped = false;
@@ -146,11 +149,16 @@ export class ZyndBase {
     // fields like timestamps stay fresh.
     this.cardBuilder = (): SignedAgentCard => {
       const baseUrl = this.getBaseUrl();
+      if (!this.logosScanned) {
+        this.detectedLogos = scanLogos(this.getAssetsDir(), baseUrl);
+        this.logosScanned = true;
+      }
       const buildArgs: Parameters<typeof buildRuntimeCard>[0] = {
         config: this.config,
         baseUrl,
         keypair: this.keypair,
         entityId: this.entityId,
+        logos: this.detectedLogos,
       };
       if (this.validation.payloadModel) buildArgs.payloadModel = this.validation.payloadModel;
       if (this.validation.outputModel) buildArgs.outputModel = this.validation.outputModel;
@@ -168,6 +176,7 @@ export class ZyndBase {
       a2aPath: this.config.a2aPath,
       authMode: this.config.authMode,
       maxBodyBytes: validation.maxBodyBytes ?? this.config.maxBodyBytes,
+      assetsDir: this.getAssetsDir(),
     };
     if (fqan) a2aOpts.fqan = fqan;
     if (validation.payloadModel) a2aOpts.payloadModel = validation.payloadModel;
@@ -393,6 +402,10 @@ export class ZyndBase {
 
   private getBaseUrl(): string {
     return buildEntityUrl(this.config);
+  }
+
+  private getAssetsDir(): string {
+    return path.join(process.cwd(), "assets");
   }
 
   private isLoopbackUrl(url: string): boolean {

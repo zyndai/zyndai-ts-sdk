@@ -16,6 +16,8 @@
  * agent per process. No multiplexing, no connection pooling.
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import express from "express";
 import type { Application, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "node:http";
@@ -154,6 +156,8 @@ export interface A2AServerOptions {
   developerProof?: import("./types.js").ZyndAuth["developer_proof"];
   /** Idle TTL for tasks parked in input-required. Default 1h. */
   idleTtlMs?: number;
+  /** Directory to serve logo assets from. When set, registers /logo.png and /logo/:dims.png routes. */
+  assetsDir?: string;
 }
 
 export const DEFAULT_MAX_BODY_BYTES = 25 * 1024 * 1024;
@@ -190,6 +194,7 @@ export class A2AServer {
     this.app = express();
     this.app.use(express.json({ limit: this.opts.maxBodyBytes }));
     this.registerRoutes();
+    if (opts.assetsDir) this.registerLogoRoutes(opts.assetsDir);
     this.registerErrorHandler();
   }
 
@@ -324,6 +329,21 @@ export class A2AServer {
           err instanceof Error ? err.message : "Internal error",
         );
       }
+    });
+  }
+
+  private registerLogoRoutes(assetsDir: string): void {
+    this.app.get("/logo.png", (_req: Request, res: Response) => {
+      const file = path.join(assetsDir, "logo.png");
+      if (!fs.existsSync(file)) { res.status(404).end(); return; }
+      res.sendFile(path.resolve(file));
+    });
+
+    this.app.get(/^\/logo\/(\d+x\d+)\.png$/, (req: Request, res: Response) => {
+      const dims = (req.params as unknown as Record<string, string>)[0];
+      const file = path.join(assetsDir, `logo@${dims}.png`);
+      if (!fs.existsSync(file)) { res.status(404).end(); return; }
+      res.sendFile(path.resolve(file));
     });
   }
 
