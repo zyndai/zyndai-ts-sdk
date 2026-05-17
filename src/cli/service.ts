@@ -171,6 +171,17 @@ export function registerServiceCommand(program: Command): void {
         );
       }
 
+      // assets/ — default logo shipped with every new service.
+      const assetsDir = path.join(cwd, "assets");
+      fs.mkdirSync(assetsDir, { recursive: true });
+      const logoDestPath = path.join(assetsDir, "logo.png");
+      if (!fs.existsSync(logoDestPath)) {
+        const logoSrc = path.join(templatesDir(), "assets", "default_logo.png");
+        if (fs.existsSync(logoSrc)) {
+          fs.copyFileSync(logoSrc, logoDestPath);
+        }
+      }
+
       // Entry file: service.ts or service.py.
       const serviceTpl = loadTemplate(serviceTemplateFile(lang));
       if (serviceTpl) {
@@ -219,6 +230,7 @@ export function registerServiceCommand(program: Command): void {
       console.log(`  ${chalk.dim("Entry")}       service.${ext}`);
       console.log(`  ${chalk.dim("Payload")}     payload.${ext}`);
       console.log(`  ${chalk.dim("Env")}         .env`);
+      console.log(`  ${chalk.dim("Logo")}        assets/logo.png`);
       console.log(
         `  ${chalk.dim("Keypair")}     ${identity.keypairPath}${identity.reusedExisting ? chalk.dim(" (reused)") : ""}`,
       );
