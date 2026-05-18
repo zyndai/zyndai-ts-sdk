@@ -167,6 +167,7 @@ export class ZyndBase {
     };
 
     const fqan = this.config.fqan;
+    const isDevMode = process.env["ZYND_DEV"] === "1";
     const a2aOpts: ConstructorParameters<typeof A2AServer>[0] = {
       entityId: this.entityId,
       keypair: this.keypair,
@@ -177,6 +178,7 @@ export class ZyndBase {
       authMode: this.config.authMode,
       maxBodyBytes: validation.maxBodyBytes ?? this.config.maxBodyBytes,
       assetsDir: this.getAssetsDir(),
+      devMode: isDevMode,
     };
     if (fqan) a2aOpts.fqan = fqan;
     if (validation.payloadModel) a2aOpts.payloadModel = validation.payloadModel;
@@ -239,6 +241,15 @@ export class ZyndBase {
   // ---------------------------------------------------------------------------
 
   private async upsertOnRegistry(): Promise<void> {
+    // Dev mode: skip re-registration on tsx --watch restarts.
+    // Lockfile written after first successful registration; deleted by prod run.
+    const isDevMode = process.env["ZYND_DEV"] === "1";
+    const devLockFile = path.join(process.cwd(), ".zynd-dev-registered");
+    if (isDevMode && fs.existsSync(devLockFile)) {
+      console.log(chalk.hex("#8B5CF6").dim("[registry] dev mode — skipping re-registration (delete .zynd-dev-registered to force)"));
+      return;
+    }
+
     const devKeyPath = defaultDeveloperKeyPath();
     const hasDevKey = fs.existsSync(devKeyPath);
 
@@ -364,6 +375,7 @@ export class ZyndBase {
         ...(openapiUrl ? { openapiUrl } : {}),
       });
       console.log(chalk.hex("#8B5CF6")(`[registry] ✓ registered ${registeredId}`));
+      if (isDevMode) fs.writeFileSync(devLockFile, "");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("HTTP 409")) {

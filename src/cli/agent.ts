@@ -400,10 +400,16 @@ export function registerAgentCommand(program: Command): void {
     );
 
   agent
-    .command("run")
-    .description("Start the agent from the current directory (auto-detects TS or Python)")
+    .command("run [mode]")
+    .description("Start the agent. Pass 'dev' for hot-reload mode (zynd agent run dev)")
     .option("--port <port>", "Override webhook port", parseInt)
-    .action(async (opts: { port?: number }) => {
+    .action(async (mode: string | undefined, opts: { port?: number }) => {
+      if (mode && mode !== "dev" && mode !== "prod") {
+        console.error(chalk.red(`Unknown mode "${mode}". Use: zynd agent run dev`));
+        process.exitCode = 1;
+        return;
+      }
+      const isDev = mode === "dev";
       const cwd = process.cwd();
 
       // Project config: agent.config.json in cwd. Older TS layout
@@ -436,7 +442,11 @@ export function registerAgentCommand(program: Command): void {
         (raw["webhook_port"] as number) ?? // back-compat with older configs
         5000;
 
-      console.log(chalk.dim(`Starting agent "${name}" on port ${port}...`));
+      if (isDev) {
+        console.log(chalk.hex("#8B5CF6").bold(`[dev] agent "${name}" on port ${port} — hot-reload active`));
+      } else {
+        console.log(chalk.dim(`Starting agent "${name}" on port ${port}...`));
+      }
       console.log();
 
       // Auto-detect entry by file presence. We try TS first (the more
@@ -461,6 +471,7 @@ export function registerAgentCommand(program: Command): void {
         // disagree with what we just printed — leading to "logs say 5008,
         // SDK binds 5000" surprises.
         env["ZYND_SERVER_PORT"] = String(port);
+        if (isDev) env["ZYND_DEV"] = "1";
 
         let cmd: string;
         let args: string[];
@@ -469,9 +480,14 @@ export function registerAgentCommand(program: Command): void {
           // does not auto-resolve PATHEXT, so we must name it explicitly or
           // it fails with `spawn npx ENOENT`.
           cmd = process.platform === "win32" ? "npx.cmd" : "npx";
-          args = ["tsx", entry];
+          // Dev mode: tsx --watch for hot-reload (process restarts on code change).
+          // Registration is skipped on restart via .zynd-dev-registered lockfile (base.ts).
+          args = isDev ? ["tsx", "--watch", entry] : ["tsx", entry];
         } else if (entry.endsWith(".py")) {
           cmd = process.platform === "win32" ? "python" : "python3";
+          // Dev mode: ZYND_DEV=1 tells the Python SDK to enable Flask's Werkzeug
+          // reloader (use_reloader=True). No process restart from here — Flask
+          // handles file watching internally and skips re-registration on reload.
           args = [entry];
         } else {
           cmd = "node";
