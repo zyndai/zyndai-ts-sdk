@@ -347,7 +347,6 @@ export class A2AServer {
     const html = buildDevUiHtml({
       agentName,
       a2aPath: this.opts.a2aPath,
-      payloadSchema: this.opts.payloadModel,
     });
     this.app.get("/", (_req: Request, res: Response) => {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
