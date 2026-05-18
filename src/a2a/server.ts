@@ -18,6 +18,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { buildDevUiHtml } from "./dev-ui.js";
 import express from "express";
 import type { Application, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "node:http";
@@ -158,6 +159,8 @@ export interface A2AServerOptions {
   idleTtlMs?: number;
   /** Directory to serve logo assets from. When set, registers /logo.png and /logo/:dims.png routes. */
   assetsDir?: string;
+  /** Enable dev UI at GET /. Forces authMode="open". */
+  devMode?: boolean;
 }
 
 export const DEFAULT_MAX_BODY_BYTES = 25 * 1024 * 1024;
@@ -185,15 +188,18 @@ export class A2AServer {
       host: opts.host ?? "0.0.0.0",
       port: opts.port ?? 5000,
       a2aPath: opts.a2aPath ?? "/a2a/v1",
-      authMode: opts.authMode ?? "permissive",
+      // Dev mode forces open auth — no verification at all.
+      authMode: opts.devMode ? "open" : (opts.authMode ?? "permissive"),
       maxBodyBytes: opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
       ...opts,
+      ...(opts.devMode ? { authMode: "open" as const } : {}),
     };
 
     this.taskStore = new TaskStore({ idleTtlMs: opts.idleTtlMs });
     this.app = express();
     this.app.use(express.json({ limit: this.opts.maxBodyBytes }));
     this.registerRoutes();
+    if (opts.devMode) this.registerDevUiRoute();
     if (opts.assetsDir) this.registerLogoRoutes(opts.assetsDir);
     this.registerErrorHandler();
   }
@@ -329,6 +335,23 @@ export class A2AServer {
           err instanceof Error ? err.message : "Internal error",
         );
       }
+    });
+  }
+
+  private registerDevUiRoute(): void {
+    const cardBuilder = this.opts.agentCardBuilder;
+    const agentName = (() => {
+      try { return (cardBuilder() as Record<string, unknown>)["name"] as string ?? "agent"; }
+      catch { return "agent"; }
+    })();
+    const html = buildDevUiHtml({
+      agentName,
+      a2aPath: this.opts.a2aPath,
+      payloadSchema: this.opts.payloadModel,
+    });
+    this.app.get("/", (_req: Request, res: Response) => {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
     });
   }
 
