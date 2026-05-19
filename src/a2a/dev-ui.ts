@@ -1,8 +1,88 @@
+import type * as z from "zod";
+
+const TEXT_FIELDS = new Set(["input", "message", "query", "prompt", "text", "content"]);
+
+interface FieldDef {
+  name: string;
+  zodType: string;
+  required: boolean;
+}
+
+function extractFields(schema: z.ZodTypeAny | undefined): FieldDef[] {
+  if (!schema) return [];
+
+  let s: Record<string, unknown> = schema as unknown as Record<string, unknown>;
+  while (
+    s?.["_def"] &&
+    ["ZodOptional", "ZodNullable", "ZodDefault"].includes(
+      (s["_def"] as Record<string, unknown>)["typeName"] as string,
+    )
+  ) {
+    const def = s["_def"] as Record<string, unknown>;
+    s = (def["innerType"] ?? def["schema"]) as Record<string, unknown>;
+  }
+
+  const typeName = (s?.["_def"] as Record<string, unknown>)?.["typeName"];
+  if (typeName !== "ZodObject") return [];
+
+  const shape = (s as unknown as z.ZodObject<z.ZodRawShape>).shape as Record<string, z.ZodTypeAny>;
+  return Object.entries(shape).map(([name, field]) => {
+    let f: Record<string, unknown> = field as unknown as Record<string, unknown>;
+    let optional = false;
+    while (
+      f?.["_def"] &&
+      ["ZodOptional", "ZodNullable", "ZodDefault"].includes(
+        (f["_def"] as Record<string, unknown>)["typeName"] as string,
+      )
+    ) {
+      optional = true;
+      const def = f["_def"] as Record<string, unknown>;
+      f = (def["innerType"] ?? def["schema"]) as Record<string, unknown>;
+    }
+    const innerType = ((f?.["_def"] as Record<string, unknown>)?.["typeName"] as string) ?? "ZodString";
+    return { name, zodType: innerType, required: !optional };
+  });
+}
+
+function fieldToHtml(field: FieldDef): string {
+  const { name, zodType, required } = field;
+  const label = name + (required ? " *" : "");
+  const fid = `field-${name}`;
+  const req = required ? "required" : "";
+  const isText = TEXT_FIELDS.has(name);
+
+  switch (zodType) {
+    case "ZodBoolean":
+      return `<div class="field checkbox-field"><label class="checkbox-label"><input type="checkbox" id="${fid}" name="${name}"> ${name}</label></div>`;
+    case "ZodNumber":
+    case "ZodBigInt":
+      return `<div class="field"><label for="${fid}">${label}</label><input type="number" id="${fid}" name="${name}" ${req} placeholder="0"></div>`;
+    case "ZodArray":
+    case "ZodObject":
+    case "ZodRecord":
+      return `<div class="field"><label for="${fid}">${label}</label><textarea id="${fid}" name="${name}" rows="3" placeholder="null"></textarea></div>`;
+    default:
+      return isText
+        ? `<div class="field"><label for="${fid}">${label}</label><textarea id="${fid}" name="${name}" rows="4" ${req} placeholder="Enter your message…"></textarea></div>`
+        : `<div class="field"><label for="${fid}">${label}</label><input type="text" id="${fid}" name="${name}" ${req} placeholder="${name}"></div>`;
+  }
+}
+
 export function buildDevUiHtml(opts: {
   agentName: string;
   a2aPath: string;
+  payloadSchema?: z.ZodTypeAny;
 }): string {
-  const { agentName, a2aPath } = opts;
+  const { agentName, a2aPath, payloadSchema } = opts;
+  const fields = extractFields(payloadSchema);
+  const hasCustom = fields.length > 0;
+
+  const formFieldsHtml = hasCustom
+    ? fields.map(fieldToHtml).join("\n")
+    : `<div class="field"><label for="field-msg">message</label><textarea id="field-msg" name="__msg__" rows="5" required placeholder="Enter your message…"></textarea></div>`;
+
+  const fieldsJson = JSON.stringify(fields);
+  const textFieldsJson = JSON.stringify([...TEXT_FIELDS]);
 
   return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -27,27 +107,30 @@ export function buildDevUiHtml(opts: {
   .badge { background: var(--accent); color: #fff; font-size: .65rem;
     padding: .2rem .5rem; border-radius: 999px; font-weight: 600;
     letter-spacing: .08em; text-transform: uppercase; }
-  .endpoint { color: var(--muted); font-size: .8rem; margin-top: .4rem;
-    font-family: var(--mono); }
+  .endpoint { color: var(--muted); font-size: .8rem; margin-top: .4rem; font-family: var(--mono); }
   .card { background: var(--surface); border: 1px solid var(--border);
     border-radius: .75rem; padding: 1.5rem; margin-bottom: 1.5rem; }
   .card-title { font-size: .7rem; font-weight: 600; text-transform: uppercase;
     letter-spacing: .1em; color: var(--muted); margin-bottom: 1rem; }
-  textarea {
+  .field { display: flex; flex-direction: column; gap: .4rem; margin-bottom: 1rem; }
+  .field:last-child { margin-bottom: 0; }
+  label { font-size: .8rem; font-weight: 500; color: var(--muted); }
+  input[type=text], input[type=number], textarea {
     background: var(--bg); border: 1px solid var(--border); border-radius: .4rem;
-    color: var(--text); font-family: var(--font); font-size: .95rem;
-    padding: .75rem .9rem; width: 100%; outline: none; resize: vertical;
-    min-height: 120px; line-height: 1.5; }
-  textarea:focus { border-color: var(--accent); }
-  button {
-    background: var(--accent); border: none; border-radius: .5rem;
+    color: var(--text); font-family: var(--font); font-size: .9rem;
+    padding: .65rem .85rem; width: 100%; outline: none; resize: vertical; }
+  input:focus, textarea:focus { border-color: var(--accent); }
+  textarea { min-height: 72px; line-height: 1.5; }
+  .checkbox-field { flex-direction: row; align-items: center; }
+  .checkbox-label { display: flex; align-items: center; gap: .5rem; font-size: .9rem; cursor: pointer; }
+  input[type=checkbox] { width: 1rem; height: 1rem; accent-color: var(--accent); }
+  button { background: var(--accent); border: none; border-radius: .5rem;
     color: #fff; cursor: pointer; font-size: .9rem; font-weight: 600;
     padding: .7rem 1.4rem; width: 100%; margin-top: .75rem; transition: opacity .15s; }
   button:hover { opacity: .85; }
   button:disabled { opacity: .4; cursor: not-allowed; }
   #resp { display: none; }
-  .resp-header { display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: .75rem; }
+  .resp-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: .75rem; }
   .status-ok  { color: var(--ok);  font-size: .8rem; font-weight: 600; }
   .status-err { color: var(--error); font-size: .8rem; font-weight: 600; }
   pre { background: var(--bg); border: 1px solid var(--border); border-radius: .4rem;
@@ -67,9 +150,11 @@ export function buildDevUiHtml(opts: {
   </header>
 
   <div class="card">
-    <p class="card-title">Message</p>
-    <textarea id="msg" placeholder="Enter your message…" autofocus></textarea>
-    <button id="btn" onclick="send()">Send</button>
+    <p class="card-title">Request</p>
+    <form id="form">
+${formFieldsHtml}
+      <button type="submit" id="btn">Send</button>
+    </form>
   </div>
 
   <div class="card" id="resp">
@@ -82,10 +167,13 @@ export function buildDevUiHtml(opts: {
 </div>
 
 <script>
-async function send() {
-  const msg = document.getElementById('msg').value.trim();
-  if (!msg) return;
+const FIELDS = ${fieldsJson};
+const HAS_CUSTOM = ${hasCustom ? "true" : "false"};
+const TEXT_FIELDS = new Set(${textFieldsJson});
 
+document.getElementById('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
   const btn = document.getElementById('btn');
   const respDiv = document.getElementById('resp');
   const respStatus = document.getElementById('resp-status');
@@ -95,15 +183,35 @@ async function send() {
   btn.innerHTML = '<span class="spinner"></span>';
   respDiv.style.display = 'none';
 
+  let parts = [];
+
+  if (!HAS_CUSTOM) {
+    const text = (form.elements['__msg__']?.value || '').trim();
+    if (text) parts.push({ kind: 'text', text });
+  } else {
+    const data = {};
+    let textContent = '';
+    for (const f of FIELDS) {
+      const el = form.elements[f.name];
+      if (!el) continue;
+      let val;
+      if (f.zodType === 'ZodBoolean') val = el.checked;
+      else if (f.zodType === 'ZodNumber' || f.zodType === 'ZodBigInt') val = el.value === '' ? null : Number(el.value);
+      else if (['ZodArray','ZodObject','ZodRecord'].includes(f.zodType)) {
+        try { val = JSON.parse(el.value || 'null'); } catch { val = el.value; }
+      } else val = el.value;
+      data[f.name] = val;
+      if (TEXT_FIELDS.has(f.name) && typeof val === 'string' && val.trim()) textContent = val.trim();
+    }
+    if (textContent) parts.push({ kind: 'text', text: textContent });
+    if (Object.keys(data).length) parts.push({ kind: 'data', data });
+  }
+
   const body = {
     jsonrpc: '2.0',
     method: 'message/send',
     params: {
-      message: {
-        role: 'user',
-        parts: [{ kind: 'text', text: msg }],
-        messageId: 'dev-test',
-      }
+      message: { role: 'user', parts, messageId: 'dev-test' }
     },
     id: 'dev-1',
   };
@@ -128,10 +236,6 @@ async function send() {
     btn.disabled = false;
     btn.textContent = 'Send';
   }
-}
-
-document.getElementById('msg').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send();
 });
 </script>
 </body>
