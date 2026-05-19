@@ -91,7 +91,9 @@ function convert(schema: z.ZodTypeAny): Record<string, unknown> {
 
     case "ZodArray": {
       const items = (def as unknown as { type: z.ZodTypeAny }).type;
-      return withDesc({ type: "array", items: convert(items) }, schema);
+      const out = withDesc({ type: "array", items: convert(items) }, schema);
+      liftAcceptedMimeTypes(out);
+      return out;
     }
 
     case "ZodRecord": {
@@ -193,6 +195,24 @@ function withDesc(out: Record<string, unknown>, schema: z.ZodTypeAny): Record<st
 function attachDescription(out: Record<string, unknown>, schema: z.ZodTypeAny): void {
   const desc = (schema as unknown as { description?: string }).description;
   if (typeof desc === "string" && desc) out["description"] = desc;
+}
+
+/**
+ * Templates declare per-field mime whitelists via Zod's .describe() convention:
+ *   z.array(Attachment).describe("accepted_mime_types=application/pdf,image/png")
+ * Lift that into a structured `accepted_mime_types: string[]` JSON Schema
+ * field so the playground UI can read it without re-parsing the description.
+ */
+function liftAcceptedMimeTypes(out: Record<string, unknown>): void {
+  const desc = out["description"];
+  if (typeof desc !== "string") return;
+  const m = desc.match(/accepted_mime_types\s*=\s*([^\s]+)/);
+  if (!m) return;
+  const mimes = m[1]
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (mimes.length > 0) out["accepted_mime_types"] = mimes;
 }
 
 /**

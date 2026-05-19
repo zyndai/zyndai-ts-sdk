@@ -548,6 +548,9 @@ export class ZyndBase {
     console.log(`  ${chalk.dim("Address")}      ${chalk.dim(this.payToAddress)}`);
     console.log(`  ${chalk.dim("A2A")}          ${chalk.hex("#10B981")(this.a2aUrl)}`);
     console.log(`  ${chalk.dim("Card")}         ${chalk.hex("#10B981")(this.cardUrl)}`);
+    if (process.env["ZYND_DEV"] === "1") {
+      console.log(`  ${chalk.dim("Dev UI")}       ${chalk.hex("#8B5CF6")(this.getBaseUrl())}`);
+    }
     console.log(`  ${chalk.dim("Price")}        ${price}`);
     console.log();
   }
