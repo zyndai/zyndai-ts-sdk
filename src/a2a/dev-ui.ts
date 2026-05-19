@@ -203,7 +203,11 @@ document.getElementById('form').addEventListener('submit', async (e) => {
       data[f.name] = val;
       if (TEXT_FIELDS.has(f.name) && typeof val === 'string' && val.trim()) textContent = val.trim();
     }
-    if (textContent) parts.push({ kind: 'text', text: textContent });
+    // Always include a text part so inbound.message.content is non-empty.
+    // Agents that read content get the JSON string; agents that read payload
+    // get the properly validated structured fields from the data part.
+    const textPart = textContent || JSON.stringify(data);
+    if (textPart) parts.push({ kind: 'text', text: textPart });
     if (Object.keys(data).length) parts.push({ kind: 'data', data });
   }
 
