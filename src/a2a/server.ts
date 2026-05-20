@@ -450,6 +450,14 @@ export class A2AServer {
 
     void this.dispatch(taskId, contextId, message, authCtx);
 
+    // Honor blocking=false — return working state immediately.
+    if (parseResult.data.configuration?.blocking === false) {
+      const workingTask = this.taskStore.get(taskId);
+      if (workingTask) this.respondSuccess(res, id, workingTask);
+      else this.respondError(res, id, A2A_TASK_NOT_FOUND, "Task not found after dispatch");
+      return;
+    }
+
     // Wait for settle (terminal or interrupted).
     await this.waitForSettle(taskId);
     const finalTask = this.taskStore.get(taskId);
