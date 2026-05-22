@@ -448,7 +448,20 @@ export class A2AServer {
     this.taskStore.appendMessage(taskId, message);
     this.taskStore.setState(taskId, "working");
 
-    void this.dispatch(taskId, contextId, message, authCtx);
+    this.dispatch(taskId, contextId, message, authCtx).catch((err) => {
+      // Belt-and-braces: nothing inside dispatch is expected to escape, but if
+      // it does, log + reject the task rather than crash the process via
+      // unhandledRejection.
+      console.error(`[a2a-server] dispatch escaped for task ${taskId}:`, err);
+      const cur = this.taskStore.get(taskId);
+      if (cur && !TERMINAL_STATES.has(cur.status.state)) {
+        this.taskStore.setState(
+          taskId,
+          "rejected",
+          this.errorMessage(err instanceof Error ? err.message : String(err)),
+        );
+      }
+    });
 
     // Wait for settle (terminal or interrupted).
     await this.waitForSettle(taskId);
@@ -513,7 +526,20 @@ export class A2AServer {
     res.on("close", () => unsubscribe());
 
     this.taskStore.setState(taskId, "working");
-    void this.dispatch(taskId, contextId, message, authCtx);
+    this.dispatch(taskId, contextId, message, authCtx).catch((err) => {
+      // Belt-and-braces: nothing inside dispatch is expected to escape, but if
+      // it does, log + reject the task rather than crash the process via
+      // unhandledRejection.
+      console.error(`[a2a-server] dispatch escaped for task ${taskId}:`, err);
+      const cur = this.taskStore.get(taskId);
+      if (cur && !TERMINAL_STATES.has(cur.status.state)) {
+        this.taskStore.setState(
+          taskId,
+          "rejected",
+          this.errorMessage(err instanceof Error ? err.message : String(err)),
+        );
+      }
+    });
 
     // The status-update with final:true closes the stream.
     const closeWatcher = setInterval(() => {
@@ -664,7 +690,21 @@ export class A2AServer {
       return;
     }
 
-    const inbound = fromA2AMessage(message, this.opts.payloadModel);
+    let inbound: ReturnType<typeof fromA2AMessage>;
+    try {
+      inbound = fromA2AMessage(message, this.opts.payloadModel);
+    } catch (err) {
+      // Payload validation (Zod) or shape errors: reject the task instead of
+      // letting the throw bubble up to the unhandled-rejection handler — that
+      // crashed the process on Node 20+.
+      const reason = err instanceof Error ? err.message : String(err);
+      this.taskStore.setState(
+        taskId,
+        "rejected",
+        this.errorMessage(`payload validation failed: ${reason}`),
+      );
+      return;
+    }
     const handlerInput: HandlerInput = {
       message: inbound.message,
       payload: inbound.payload,
