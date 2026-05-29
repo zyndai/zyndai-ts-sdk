@@ -163,6 +163,7 @@ export class ZyndBase {
       if (this.validation.payloadModel) buildArgs.payloadModel = this.validation.payloadModel;
       if (this.validation.outputModel) buildArgs.outputModel = this.validation.outputModel;
       if (this.resolvedProvider) buildArgs.fallbackProvider = this.resolvedProvider;
+      buildArgs.walletAddress = this.payToAddress;
       return buildRuntimeCard(buildArgs);
     };
 

@@ -96,6 +96,7 @@ export interface BuildCardOptions {
   category?: string;
   tags?: string[];
   summary?: string;
+  walletAddress?: string;
   logos?: AgentLogos | null;
 
   /** A2A endpoint path. Default `/a2a/v1`. */
@@ -190,6 +191,7 @@ export function buildAgentCard(opts: BuildCardOptions): SignedAgentCard {
     ...(opts.category ? { category: opts.category } : {}),
     ...(opts.tags ? { tags: opts.tags } : {}),
     ...(opts.summary ? { summary: opts.summary } : {}),
+    ...(opts.walletAddress ? { walletAddress: opts.walletAddress } : {}),
     ...(schemaAd.input_schema ? { inputSchema: schemaAd.input_schema } : {}),
     ...(schemaAd.output_schema ? { outputSchema: schemaAd.output_schema } : {}),
     ...(schemaAd.accepts_files !== undefined ? { acceptsFiles: schemaAd.accepts_files } : {}),

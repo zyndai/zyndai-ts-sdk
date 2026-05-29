@@ -128,6 +128,8 @@ export interface BuildRuntimeCardArgs {
    */
   fallbackProvider?: AgentCardProvider;
   logos?: AgentLogos | null;
+  /** EVM wallet address for this agent, published in x-zynd block. */
+  walletAddress?: string;
 }
 
 /**
@@ -241,6 +243,7 @@ export function buildRuntimeCard(args: BuildRuntimeCardArgs): SignedAgentCard {
   if (args.developerProof) cardOpts.developerProof = args.developerProof;
   if (config.category) cardOpts.category = config.category;
   if (config.tags) cardOpts.tags = config.tags;
+  if (args.walletAddress) cardOpts.walletAddress = args.walletAddress;
   // The card no longer carries a separate `summary` field — the
   // x-zynd.summary slot was redundant with `description`. Search
   // consumers should read `description` (or compute their own snippet
