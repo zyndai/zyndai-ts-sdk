@@ -27,11 +27,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup && chmod +x dist/cli/index.js",
+    "build": "tsup && node scripts/chmod-cli.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
+    "verify:package": "node scripts/verify-package-files.mjs",
+    "prepack": "npm run build && npm run verify:package",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
