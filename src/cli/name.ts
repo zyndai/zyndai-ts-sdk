@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import * as fs from "node:fs";
 import { loadKeypair, generateDeveloperId } from "../identity.js";
-import { getDeveloper, registerName } from "../registry.js";
+import { getDeveloper, registerName, releaseName } from "../registry.js";
 import { getRegistryUrl, developerKeyPath } from "./config.js";
 
 export function registerNameCommand(program: Command): void {
@@ -74,6 +74,60 @@ export function registerNameCommand(program: Command): void {
         console.log(`  Registry:   ${registryUrl}`);
       } catch (err) {
         console.error(chalk.red(`Failed to bind name: ${err instanceof Error ? err.message : String(err)}`));
+        process.exitCode = 1;
+      }
+    });
+
+  nameCmd
+    .command("unbind")
+    .description("Release a name binding (unbind an FQAN from an entity)")
+    .requiredOption("--entity-name <name>", "Name slug to release (e.g. my-agent)")
+    .option("--handle <handle>", "Developer handle override (auto-fetched from registry if omitted)")
+    .action(async (opts: { entityName: string; handle?: string }) => {
+      const registryUrl = getRegistryUrl(program.opts().registry as string | undefined);
+      const devPath = developerKeyPath();
+
+      if (!fs.existsSync(devPath)) {
+        console.error(chalk.red("No developer keypair found. Run 'zynd auth login --registry <url>' first."));
+        process.exitCode = 1;
+        return;
+      }
+
+      const devKp = loadKeypair(devPath);
+      let handle = opts.handle;
+
+      if (!handle) {
+        const devId = generateDeveloperId(devKp.publicKeyBytes);
+        try {
+          const dev = await getDeveloper(registryUrl, devId);
+          if (!dev || !dev["dev_handle"]) {
+            console.error(chalk.red(
+              "Could not resolve your developer handle from registry.\n" +
+              "Claim a handle first or pass --handle explicitly."
+            ));
+            process.exitCode = 1;
+            return;
+          }
+          handle = dev["dev_handle"] as string;
+        } catch (err) {
+          console.error(chalk.red(`Failed to fetch developer info: ${err instanceof Error ? err.message : String(err)}`));
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      try {
+        await releaseName({
+          registryUrl,
+          developerKeypair: devKp,
+          developerHandle: handle,
+          entityName: opts.entityName,
+        });
+        console.log(chalk.green("Name released."));
+        console.log(`  ${handle}/${opts.entityName}`);
+        console.log(chalk.dim("\nThe entity can now be deregistered: zynd deregister --entity-id <id>"));
+      } catch (err) {
+        console.error(chalk.red(`Failed to release name: ${err instanceof Error ? err.message : String(err)}`));
         process.exitCode = 1;
       }
     });
