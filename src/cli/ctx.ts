@@ -108,7 +108,8 @@ export function registerCtxCommand(program: Command): void {
   ctx
     .command("init")
     .description("Configure memory providers and connect to memory-layer")
-    .action(async () => {
+    .option("--memory-url <url>", "Memory-layer URL override (default: https://api.zynd.ai)")
+    .action(async (opts: { memoryUrl?: string }) => {
       const rl = readline.createInterface({ input, output });
       // Gracefully handle piped/closed stdin — return empty string (accept default)
       const ask = async (q: string): Promise<string> => {
@@ -124,16 +125,11 @@ export function registerCtxCommand(program: Command): void {
       const existing = loadCtxConfig();
       const config: CtxConfig = { ...existing, providers: { ...existing.providers } };
 
-      // ── Step 1: Ask ALL questions first (no async between questions) ───────
-      console.log(chalk.bold("Memory layer\n"));
-      const currentUrl = getMemoryUrl(config);
-      const urlInput = await ask(`URL [${currentUrl}]: `);
-      const memUrl = urlInput.trim() || currentUrl;
-
-      console.log(chalk.bold("\nMemory providers\n"));
+      const memUrl = opts.memoryUrl?.trim() || getMemoryUrl(config);
+      console.log(chalk.dim(`Memory layer: ${memUrl}`));
 
       // ── Phase 1: Collect ALL text answers — zero async between questions ──
-
+      console.log(chalk.bold("\nMemory providers\n"));
       const linkedInAlreadyConfigured = linkedInSessionExists(config.providers.linkedin?.li_at);
       const linkedInDefault = linkedInAlreadyConfigured ? "Y/n" : "y/N";
       const linkedInAnswer = (await ask(`Add LinkedIn? (${linkedInDefault}) `)).trim().toLowerCase();
@@ -177,7 +173,7 @@ export function registerCtxCommand(program: Command): void {
       const discovered = await discoverMemoryLayer(memUrl);
       if (!discovered) {
         console.log(chalk.yellow("could not reach — sync will fail until reachable"));
-        if (urlInput.trim()) config.memory_url = urlInput.trim();
+        if (opts.memoryUrl?.trim()) config.memory_url = opts.memoryUrl.trim();
       } else {
         config.memory_url = discovered.url;
         console.log(chalk.green("reachable"));
