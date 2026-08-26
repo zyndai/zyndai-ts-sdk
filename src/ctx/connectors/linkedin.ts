@@ -330,7 +330,9 @@ try:
         js_val = f'"{js_val}"'
     jar.set("JSESSIONID", js_val)
 
-    api = Linkedin("", "", cookies=jar, authenticate=True)
+    # authenticate=False — we're already authed via li_at cookie, not credentials.
+    # authenticate=True with empty creds causes a redirect loop (30 redirects error).
+    api = Linkedin("", "", cookies=jar, authenticate=False)
 
     me = api.get_user_profile()
     urn = me.get("entityUrn", "") if isinstance(me, dict) else ""
