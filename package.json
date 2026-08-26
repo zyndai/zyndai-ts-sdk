@@ -1,6 +1,6 @@
 {
   "name": "zyndai",
-  "version": "0.5.7",
+  "version": "0.6.0",
   "description": "Multi-framework AI agent SDK for the Zynd AI Network. Ed25519 identity, agent discovery, A2A protocol communication, agent cards, x402 micropayments, and one-shot deploy via zynd-deployer.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -32,9 +32,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
+    "prepack": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@getzep/zep-cloud": "^3.28.0",
     "@noble/ciphers": "^1.2.0",
     "@noble/curves": "^1.8.0",
     "@noble/ed25519": "^2.2.0",

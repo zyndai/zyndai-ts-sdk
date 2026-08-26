@@ -162,4 +162,53 @@ export type {
 export { scanLogos } from "./logo.js";
 export type { AgentLogos, LogoVariant } from "./logo.js";
 
-export const VERSION = "0.5.0";
+// @zynd/bridge — local-first personal memory sync
+export {
+  LinkedInConnector,
+  Mem0Connector,
+  ZepConnector,
+  ZyndNativeConnector,
+  MemoryClient,
+  sync as bridgeSync,
+  getMatches as bridgeGetMatches,
+  loadBridgeConfig,
+  saveBridgeConfig,
+  bridgeConfigPath,
+  getMemoryUrl,
+  getRegistryUrl,
+  sanitizeString,
+  sanitizeObject,
+  assertEgressClean,
+  classifyTier,
+  distillLinkedInProfile,
+  getMasterKey,
+  loadStore,
+  saveStore,
+  withStore,
+  enqueueAssertion,
+  enqueueAssertions,
+  drainOutbox,
+  drainToMemoryLayer,
+  acquireRateSlot,
+  engageCooldown,
+  getGovernorStatus,
+  filterAllowedTools,
+  startMcpServer,
+  acquireLock,
+  releaseLock,
+  registerShutdownHandlers,
+  isDaemonRunning,
+  getDaemonPid,
+} from "./bridge/index.js";
+export type {
+  BridgeConfig,
+  BridgeStore,
+  TieredAssertion,
+  PrivacyTier,
+  McpServer,
+  McpServerOptions,
+  OutboxItem,
+} from "./bridge/index.js";
+
+// Invariant: must match package.json "version" — bump both together on release.
+export const VERSION = "0.6.0";

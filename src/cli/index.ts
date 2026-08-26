@@ -13,6 +13,8 @@ import { registerAgentCommand } from "./agent.js";
 import { registerServiceCommand } from "./service.js";
 import { registerDeployCommand } from "./deploy.js";
 import { registerNameCommand } from "./name.js";
+import { registerBridgeCommand } from "./bridge.js";
+import { registerCtxCommand } from "./ctx.js";
 
 // Note: `zynd init` was removed. Developer identities are now created
 // exclusively through `zynd auth login --registry <url>` — the registry
@@ -41,5 +43,7 @@ registerAgentCommand(program);
 registerServiceCommand(program);
 registerDeployCommand(program);
 registerNameCommand(program);
+registerBridgeCommand(program);
+registerCtxCommand(program); // kept for backward compat (aliases bridge commands)
 
 program.parse();
