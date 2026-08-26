@@ -237,10 +237,29 @@ def prompt_paste():
     print(json.dumps({"li_at": li_at, "jsessionid": jsessionid}))
     sys.exit(0)
 
+def _validate_li_at(li_at, jsessionid):
+    """Verify a captured li_at is still a live LinkedIn session."""
+    try:
+        import requests
+        from open_linkedin_api import Linkedin
+        from requests.cookies import RequestsCookieJar
+        jar = RequestsCookieJar()
+        jar.set("li_at", li_at)
+        js_val = jsessionid if jsessionid else "ajax:0"
+        if not js_val.startswith('"'):
+            js_val = f'"{js_val}"'
+        jar.set("JSESSIONID", js_val)
+        api = Linkedin("", "", cookies=jar, authenticate=False)
+        me = api.get_user_profile()
+        return bool(me and (me.get("entityUrn") or me.get("miniProfile") or me.get("firstName")))
+    except Exception:
+        return False
+
 try:
-    # Already logged in to LinkedIn in any browser? Use it immediately.
+    # Use a cached browser cookie only if it's still a live session. A stale
+    # li_at fails later at sync time with a confusing "session expired".
     cookies = get_linkedin_cookies()
-    if cookies.get("li_at"):
+    if cookies.get("li_at") and _validate_li_at(cookies["li_at"], cookies.get("JSESSIONID", "")):
         print(json.dumps({"li_at": cookies["li_at"], "jsessionid": cookies.get("JSESSIONID", "")}))
         sys.exit(0)
 
@@ -254,7 +273,7 @@ try:
     while time.time() < deadline:
         time.sleep(3)
         cookies = get_linkedin_cookies()
-        if cookies.get("li_at"):
+        if cookies.get("li_at") and _validate_li_at(cookies["li_at"], cookies.get("JSESSIONID", "")):
             print(json.dumps({"li_at": cookies["li_at"], "jsessionid": cookies.get("JSESSIONID", "")}))
             sys.exit(0)
 
@@ -575,7 +594,7 @@ export class LinkedInConnector implements IMemoryConnector {
       // stdin inherited so user can paste li_at if auto-read fails (Arc/new Chrome)
       const proc = child_process.spawn(
         "uv",
-        ["run", "--with", "cryptography", "python3", scriptPath],
+        ["run", "--with", "cryptography", "--with", "open-linkedin-api", "python3", scriptPath],
         { stdio: ["inherit", "pipe", "inherit"], timeout: 200_000 }
       );
 
