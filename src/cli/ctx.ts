@@ -495,8 +495,9 @@ export function registerCtxCommand(program: Command): void {
       const existingServers = (existing["mcpServers"] as Record<string, unknown> | undefined) ?? {};
       const merged = { ...existing, mcpServers: { ...existingServers, ...mcpBlock } };
 
-      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-      fs.writeFileSync(targetPath, JSON.stringify(merged, null, 2));
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(targetPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
+      fs.chmodSync(targetPath, 0o600);
 
       console.log(chalk.green(`✓ ZYND memory wired into ${opts.client === "claude" ? "Claude Desktop" : opts.client}`));
       console.log(chalk.dim(`  Config: ${targetPath}`));

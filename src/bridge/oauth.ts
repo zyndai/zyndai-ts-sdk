@@ -170,7 +170,8 @@ function waitForCallback(opts: {
         return;
       }
       if (error || !code) {
-        sendPage(`<h2 style="color:#ef4444">Sign-in failed</h2><p>${error ?? "No code returned."}</p>`, 400);
+        const safeError = (error ?? "No code returned.").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        sendPage(`<h2 style="color:#ef4444">Sign-in failed</h2><p>${safeError}</p>`, 400);
         reject(new Error(`OAuth error: ${error ?? "no code returned"}`));
         return;
       }
