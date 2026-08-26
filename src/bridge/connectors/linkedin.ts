@@ -491,7 +491,15 @@ export class LinkedInConnector implements IMemoryConnector {
       if (msg.includes("429") || msg.includes("CAPTCHA") || msg.includes("checkpoint")) {
         await engageCooldown().catch(() => {});
       }
-      if (msg.includes("session_expired") || msg.includes("li_at")) {
+      // Stale/expired li_at cookie: open-linkedin-api receives an empty/HTML body
+      // and its internal json.loads throws "Expecting value: line 1 column 1".
+      if (
+        msg.includes("session_expired") ||
+        msg.includes("li_at") ||
+        msg.includes("Expecting value") ||
+        msg.includes("JSONDecodeError") ||
+        msg.includes("not logged in")
+      ) {
         throw new Error("LinkedIn session expired — run: zynd bridge linkedin-auth");
       }
       throw new Error(`LinkedIn sync failed: ${msg}`, { cause: err });
