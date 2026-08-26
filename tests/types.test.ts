@@ -14,7 +14,7 @@ describe("ZyndBaseConfigSchema", () => {
     expect(config.serverPort).toBe(5000);
     expect(config.a2aPath).toBe("/a2a/v1");
     expect(config.authMode).toBe("permissive");
-    expect(config.registryUrl).toBe("https://dns01.zynd.ai");
+    expect(config.registryUrl).toBe("https://zns01.zynd.ai");
     expect(config.category).toBe("general");
     expect(config.messageHistoryLimit).toBe(100);
     expect(config.protocolVersion).toBe("0.3.0");
