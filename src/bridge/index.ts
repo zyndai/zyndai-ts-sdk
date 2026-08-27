@@ -15,6 +15,7 @@ export { MemoryClient } from "./memory-client.js";
 export type { MemoryClientConfig } from "./memory-client.js";
 
 export { LinkedInConnector } from "./connectors/linkedin.js";
+export type { LinkedInPersonResult, LinkedInCompanyResult } from "./connectors/linkedin.js";
 export { Mem0Connector } from "./connectors/mem0.js";
 export { ZepConnector } from "./connectors/zep.js";
 export { ZyndNativeConnector } from "./connectors/zynd-native.js";

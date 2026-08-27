@@ -375,25 +375,6 @@ try:
         except Exception:
             pass
 
-    connections = []
-    if urn_id:
-        try:
-            raw = api.get_profile_connections(urn_id=urn, limit=limit) or []
-            for c in raw:
-                mp = c.get("miniProfile", c)
-                first = mp.get("firstName", "")
-                last  = mp.get("lastName", "")
-                name  = f"{first} {last}".strip()
-                slug  = mp.get("publicIdentifier", "")
-                connections.append({
-                    "name":     name,
-                    "headline": mp.get("occupation", ""),
-                    "location": mp.get("locationName", ""),
-                    "url":      f"https://www.linkedin.com/in/{slug}" if slug else "",
-                })
-        except Exception:
-            pass
-
     profile_lines = []
     for key in ("firstName", "lastName", "headline", "locationName", "summary"):
         val = profile_data.get(key, "")
@@ -417,7 +398,6 @@ try:
 
     print(json.dumps({
         "profile_text": "\\n".join(profile_lines),
-        "connections": connections,
         "profile": {
             "firstName":  profile_data.get("firstName", ""),
             "lastName":   profile_data.get("lastName", ""),
@@ -434,12 +414,206 @@ except Exception as e:
     sys.exit(1)
 `;
 
-interface Connection {
-  name: string;
-  headline: string;
-  location: string;
-  url: string;
-}
+// Gated: search people by keyword (PRD: search_people, coarse, rate-limited)
+const SEARCH_PEOPLE_SCRIPT = `
+import http.client, io, json, os, sys, urllib.parse
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+_orig_putheader = http.client.HTTPConnection.putheader
+def _utf8_safe_putheader(self, header, *values):
+    safe = []
+    for v in values:
+        if isinstance(v, str):
+            try: v.encode("latin-1")
+            except UnicodeEncodeError: v = urllib.parse.quote(v, safe=":/?#[]@!$&'()*+,;=% ")
+        safe.append(v)
+    return _orig_putheader(self, header, *safe)
+http.client.HTTPConnection.putheader = _utf8_safe_putheader
+import re as _re
+
+li_at      = os.environ.get("LI_AT", "")
+jsessionid = os.environ.get("LI_JSESSIONID", "")
+keywords   = os.environ.get("LI_KEYWORDS", "")
+limit      = min(int(os.environ.get("LI_LIMIT", "10")), 25)  # hard cap — no bulk
+depth      = os.environ.get("LI_DEPTH", "F")  # F=1st, S=2nd, O=other
+
+if li_at:
+    m = _re.search(r'AQED[A-Za-z0-9_-]+', li_at)
+    if m: li_at = m.group(0)
+if jsessionid:
+    m = _re.search(r'ajax:\\d+', jsessionid)
+    if m: jsessionid = m.group(0)
+
+if not li_at:
+    print(json.dumps({"error": "LI_AT not set"}))
+    sys.exit(1)
+if not keywords.strip():
+    print(json.dumps({"error": "LI_KEYWORDS required"}))
+    sys.exit(1)
+
+try:
+    from open_linkedin_api import Linkedin
+    from requests.cookies import RequestsCookieJar
+    jar = RequestsCookieJar()
+    jar.set("li_at", li_at)
+    js_val = jsessionid if jsessionid else "ajax:0"
+    if not js_val.startswith('"'): js_val = f'"{js_val}"'
+    jar.set("JSESSIONID", js_val)
+    api = Linkedin("", "", cookies=jar, authenticate=False)
+
+    raw = api.search_people(keywords=keywords, network_depth=depth, limit=limit) or []
+    results = []
+    for p in raw:
+        mp = p.get("miniProfile", p)
+        first = mp.get("firstName", "")
+        last  = mp.get("lastName", "")
+        slug  = mp.get("publicIdentifier", "")
+        results.append({
+            "name":      f"{first} {last}".strip(),
+            "headline":  mp.get("occupation", ""),
+            "location":  mp.get("locationName", ""),
+            "public_id": slug,
+            "url":       f"https://www.linkedin.com/in/{slug}" if slug else "",
+        })
+    print(json.dumps({"results": results}))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+    sys.exit(1)
+`;
+
+// Gated: fetch a specific person's profile by public_id (PRD: get_person_profile)
+const GET_PERSON_SCRIPT = `
+import http.client, io, json, os, sys, urllib.parse
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+_orig_putheader = http.client.HTTPConnection.putheader
+def _utf8_safe_putheader(self, header, *values):
+    safe = []
+    for v in values:
+        if isinstance(v, str):
+            try: v.encode("latin-1")
+            except UnicodeEncodeError: v = urllib.parse.quote(v, safe=":/?#[]@!$&'()*+,;=% ")
+        safe.append(v)
+    return _orig_putheader(self, header, *safe)
+http.client.HTTPConnection.putheader = _utf8_safe_putheader
+import re as _re
+
+li_at      = os.environ.get("LI_AT", "")
+jsessionid = os.environ.get("LI_JSESSIONID", "")
+public_id  = os.environ.get("LI_PUBLIC_ID", "")
+
+if li_at:
+    m = _re.search(r'AQED[A-Za-z0-9_-]+', li_at)
+    if m: li_at = m.group(0)
+if jsessionid:
+    m = _re.search(r'ajax:\\d+', jsessionid)
+    if m: jsessionid = m.group(0)
+
+if not li_at:
+    print(json.dumps({"error": "LI_AT not set"}))
+    sys.exit(1)
+if not public_id.strip():
+    print(json.dumps({"error": "LI_PUBLIC_ID required"}))
+    sys.exit(1)
+
+try:
+    from open_linkedin_api import Linkedin
+    from requests.cookies import RequestsCookieJar
+    jar = RequestsCookieJar()
+    jar.set("li_at", li_at)
+    js_val = jsessionid if jsessionid else "ajax:0"
+    if not js_val.startswith('"'): js_val = f'"{js_val}"'
+    jar.set("JSESSIONID", js_val)
+    api = Linkedin("", "", cookies=jar, authenticate=False)
+
+    profile = api.get_profile(public_id=public_id) or {}
+    experience = []
+    for exp in (profile.get("experience") or []):
+        experience.append({
+            "title":   exp.get("title", ""),
+            "company": exp.get("companyName", "") or exp.get("company", {}).get("miniCompany", {}).get("name", ""),
+        })
+    skills = [s.get("name", "") if isinstance(s, dict) else str(s) for s in (profile.get("skills") or []) if s]
+    print(json.dumps({
+        "profile": {
+            "firstName":  profile.get("firstName", ""),
+            "lastName":   profile.get("lastName", ""),
+            "headline":   profile.get("headline", ""),
+            "summary":    (profile.get("summary") or "")[:500],
+            "location":   profile.get("locationName", ""),
+            "public_id":  public_id,
+            "url":        f"https://www.linkedin.com/in/{public_id}",
+            "experience": experience[:5],
+            "skills":     skills[:20],
+        }
+    }))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+    sys.exit(1)
+`;
+
+// Gated: fetch a company profile by public_id (PRD: get_company_profile)
+const GET_COMPANY_SCRIPT = `
+import http.client, io, json, os, sys, urllib.parse
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+_orig_putheader = http.client.HTTPConnection.putheader
+def _utf8_safe_putheader(self, header, *values):
+    safe = []
+    for v in values:
+        if isinstance(v, str):
+            try: v.encode("latin-1")
+            except UnicodeEncodeError: v = urllib.parse.quote(v, safe=":/?#[]@!$&'()*+,;=% ")
+        safe.append(v)
+    return _orig_putheader(self, header, *safe)
+http.client.HTTPConnection.putheader = _utf8_safe_putheader
+import re as _re
+
+li_at      = os.environ.get("LI_AT", "")
+jsessionid = os.environ.get("LI_JSESSIONID", "")
+public_id  = os.environ.get("LI_PUBLIC_ID", "")
+
+if li_at:
+    m = _re.search(r'AQED[A-Za-z0-9_-]+', li_at)
+    if m: li_at = m.group(0)
+if jsessionid:
+    m = _re.search(r'ajax:\\d+', jsessionid)
+    if m: jsessionid = m.group(0)
+
+if not li_at:
+    print(json.dumps({"error": "LI_AT not set"}))
+    sys.exit(1)
+if not public_id.strip():
+    print(json.dumps({"error": "LI_PUBLIC_ID required"}))
+    sys.exit(1)
+
+try:
+    from open_linkedin_api import Linkedin
+    from requests.cookies import RequestsCookieJar
+    jar = RequestsCookieJar()
+    jar.set("li_at", li_at)
+    js_val = jsessionid if jsessionid else "ajax:0"
+    if not js_val.startswith('"'): js_val = f'"{js_val}"'
+    jar.set("JSESSIONID", js_val)
+    api = Linkedin("", "", cookies=jar, authenticate=False)
+
+    company = api.get_company(public_id) or {}
+    print(json.dumps({
+        "company": {
+            "name":        company.get("name", ""),
+            "description": (company.get("description") or "")[:500],
+            "industry":    company.get("industries", [None])[0] if company.get("industries") else "",
+            "website":     company.get("companyPageUrl", ""),
+            "headcount":   company.get("staffCount", 0),
+            "specialities": company.get("specialities", [])[:10],
+            "public_id":   public_id,
+            "url":         f"https://www.linkedin.com/company/{public_id}",
+        }
+    }))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+    sys.exit(1)
+`;
 
 interface LinkedInProfile {
   firstName?: string;
@@ -451,9 +625,29 @@ interface LinkedInProfile {
   skills?: string[];
 }
 
+export interface LinkedInPersonResult {
+  name: string;
+  headline: string;
+  location: string;
+  public_id: string;
+  url: string;
+  experience?: Array<{ title?: string; company?: string }>;
+  skills?: string[];
+}
+
+export interface LinkedInCompanyResult {
+  name: string;
+  description: string;
+  industry: string;
+  website: string;
+  headcount: number;
+  specialities: string[];
+  public_id: string;
+  url: string;
+}
+
 interface SyncResult {
   profile_text: string;
-  connections: Connection[];
   profile?: LinkedInProfile;
 }
 
@@ -537,21 +731,6 @@ export class LinkedInConnector implements IMemoryConnector {
     if (result.profile_text) {
       parts.push(`My LinkedIn profile:\n${sanitizeString(result.profile_text)}`);
     }
-    if (result.connections.length > 0) {
-      const connText = result.connections
-        .map((c) =>
-          [
-            c.name ? `Name: ${c.name}` : null,
-            c.headline ? `Role: ${sanitizeString(c.headline)}` : null,
-            c.location ? `Location: ${c.location}` : null,
-            c.url ? `LinkedIn: ${c.url}` : null,
-          ]
-            .filter(Boolean)
-            .join("\n")
-        )
-        .join("\n\n");
-      parts.push(`LinkedIn connections (${result.connections.length}):\n\n${connText}`);
-    }
 
     // Distill structured profile into tiered assertions, persist locally, enqueue for cloud sync
     if (result.profile) {
@@ -625,6 +804,107 @@ export class LinkedInConnector implements IMemoryConnector {
     });
   }
 
+  /** PRD: search_people — keyword search, gated (max 25 results, rate-limited). */
+  async searchPeople(opts: {
+    keywords: string;
+    depth?: "F" | "S" | "O";
+    limit?: number;
+  }): Promise<LinkedInPersonResult[]> {
+    await acquireRateSlot();
+    const scriptPath = LinkedInConnector.writeTempScript(SEARCH_PEOPLE_SCRIPT);
+    return new Promise((resolve, reject) => {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        LI_AT: this.liAt!,
+        LI_JSESSIONID: this.jsessionid ?? "",
+        LI_KEYWORDS: opts.keywords,
+        LI_DEPTH: opts.depth ?? "F",
+        LI_LIMIT: String(Math.min(opts.limit ?? 10, 25)),
+      };
+      const proc = child_process.spawn(
+        "uv",
+        ["run", "--with", "open-linkedin-api", "python3", scriptPath],
+        { env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 }
+      );
+      let stdout = "", stderr = "";
+      proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+      proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+      proc.on("error", reject);
+      proc.on("close", () => {
+        const lastLine = stdout.trim().split("\n").pop() ?? "";
+        let parsed: { error?: string; results?: LinkedInPersonResult[] };
+        try { parsed = JSON.parse(lastLine); }
+        catch { return reject(new Error(`search script unexpected output: ${lastLine || stderr.slice(0, 200)}`)); }
+        if (parsed.error) return reject(new Error(parsed.error));
+        resolve(parsed.results ?? []);
+      });
+    });
+  }
+
+  /** PRD: get_person_profile — single profile lookup by public_id, gated (rate-limited). */
+  async getPersonProfile(publicId: string): Promise<LinkedInPersonResult> {
+    await acquireRateSlot();
+    const scriptPath = LinkedInConnector.writeTempScript(GET_PERSON_SCRIPT);
+    return new Promise((resolve, reject) => {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        LI_AT: this.liAt!,
+        LI_JSESSIONID: this.jsessionid ?? "",
+        LI_PUBLIC_ID: publicId,
+      };
+      const proc = child_process.spawn(
+        "uv",
+        ["run", "--with", "open-linkedin-api", "python3", scriptPath],
+        { env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 }
+      );
+      let stdout = "", stderr = "";
+      proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+      proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+      proc.on("error", reject);
+      proc.on("close", () => {
+        const lastLine = stdout.trim().split("\n").pop() ?? "";
+        let parsed: { error?: string; profile?: LinkedInPersonResult };
+        try { parsed = JSON.parse(lastLine); }
+        catch { return reject(new Error(`person script unexpected output: ${lastLine || stderr.slice(0, 200)}`)); }
+        if (parsed.error) return reject(new Error(parsed.error));
+        if (!parsed.profile) return reject(new Error(`profile not found: ${publicId}`));
+        resolve(parsed.profile);
+      });
+    });
+  }
+
+  /** PRD: get_company_profile — company lookup for org verification, gated (rate-limited). */
+  async getCompanyProfile(publicId: string): Promise<LinkedInCompanyResult> {
+    await acquireRateSlot();
+    const scriptPath = LinkedInConnector.writeTempScript(GET_COMPANY_SCRIPT);
+    return new Promise((resolve, reject) => {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        LI_AT: this.liAt!,
+        LI_JSESSIONID: this.jsessionid ?? "",
+        LI_PUBLIC_ID: publicId,
+      };
+      const proc = child_process.spawn(
+        "uv",
+        ["run", "--with", "open-linkedin-api", "python3", scriptPath],
+        { env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 }
+      );
+      let stdout = "", stderr = "";
+      proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+      proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+      proc.on("error", reject);
+      proc.on("close", () => {
+        const lastLine = stdout.trim().split("\n").pop() ?? "";
+        let parsed: { error?: string; company?: LinkedInCompanyResult };
+        try { parsed = JSON.parse(lastLine); }
+        catch { return reject(new Error(`company script unexpected output: ${lastLine || stderr.slice(0, 200)}`)); }
+        if (parsed.error) return reject(new Error(parsed.error));
+        if (!parsed.company) return reject(new Error(`company not found: ${publicId}`));
+        resolve(parsed.company);
+      });
+    });
+  }
+
   private async runSync(): Promise<SyncResult> {
     const scriptPath = LinkedInConnector.writeTempScript(SYNC_SCRIPT);
     return new Promise((resolve, reject) => {
@@ -649,14 +929,14 @@ export class LinkedInConnector implements IMemoryConnector {
       proc.on("error", reject);
       proc.on("close", () => {
         const lastLine = stdout.trim().split("\n").pop() ?? "";
-        let parsed: { error?: string; profile_text?: string; connections?: Connection[] };
+        let parsed: { error?: string; profile_text?: string; profile?: LinkedInProfile };
         try {
           parsed = JSON.parse(lastLine);
         } catch {
           return reject(new Error(`sync script unexpected output: ${lastLine || stderr.slice(0, 300)}`));
         }
         if (parsed.error) return reject(new Error(parsed.error));
-        resolve({ profile_text: parsed.profile_text ?? "", connections: parsed.connections ?? [] });
+        resolve({ profile_text: parsed.profile_text ?? "", profile: parsed.profile });
       });
     });
   }
