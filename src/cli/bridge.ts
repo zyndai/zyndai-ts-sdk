@@ -108,7 +108,8 @@ export function registerBridgeCommand(program: Command): void {
   bridge
     .command("init")
     .description("Configure memory providers and connect to memory-layer")
-    .action(async () => {
+    .option("--memory-url <url>", "Memory-layer URL override (default: https://api.zynd.ai)")
+    .action(async (opts: { memoryUrl?: string }) => {
       const rl = readline.createInterface({ input, output });
       const ask = async (q: string): Promise<string> => {
         try {
@@ -123,10 +124,8 @@ export function registerBridgeCommand(program: Command): void {
       const existing = loadBridgeConfig();
       const config: BridgeConfig = { ...existing, providers: { ...existing.providers } };
 
-      console.log(chalk.bold("Memory layer\n"));
-      const currentUrl = getMemoryUrl(config);
-      const urlInput = await ask(`URL [${currentUrl}]: `);
-      const memUrl = urlInput.trim() || currentUrl;
+      const memUrl = opts.memoryUrl?.trim() || getMemoryUrl(config);
+      console.log(chalk.dim(`Memory layer: ${memUrl}`));
 
       console.log(chalk.bold("\nMemory providers\n"));
 
@@ -170,7 +169,7 @@ export function registerBridgeCommand(program: Command): void {
       const discovered = await discoverMemoryLayer(memUrl);
       if (!discovered) {
         console.log(chalk.yellow("could not reach — sync will fail until reachable"));
-        if (urlInput.trim()) config.memory_url = urlInput.trim();
+        if (opts.memoryUrl?.trim()) config.memory_url = opts.memoryUrl.trim();
       } else {
         config.memory_url = discovered.url;
         console.log(chalk.green("reachable"));
@@ -434,6 +433,63 @@ export function registerBridgeCommand(program: Command): void {
         }
       } catch (err) {
         console.log(chalk.red(`Match failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  // zynd bridge seed
+  bridge
+    .command("seed")
+    .description("Declare a demo persona of public findability facts so match can be tested")
+    .action(async () => {
+      const config = loadBridgeConfig();
+      getUserId(config);
+      const memClient = buildMemoryClient(config);
+
+      // Demo persona — uses the memory-layer's declarable findability predicates.
+      // has_expertise_in / is_building / is_learning / is_located_in / is_affiliated_with
+      // are free-form; open_to / is_seeking are enum-valued (see memory-layer OpenAPI).
+      const demoFacts: Array<{ predicate: string; value: string }> = [
+        { predicate: "has_expertise_in", value: "TypeScript" },
+        { predicate: "has_expertise_in", value: "Rust" },
+        { predicate: "has_expertise_in", value: "React" },
+        { predicate: "is_building", value: "Local-first AI agent infrastructure" },
+        { predicate: "is_learning", value: "Rust systems programming" },
+        { predicate: "is_seeking", value: "peer_review" },
+        { predicate: "open_to", value: "collaboration" },
+        { predicate: "is_located_in", value: "San Francisco, California" },
+        { predicate: "is_affiliated_with", value: "Zynd AI" },
+      ];
+
+      // Idempotent: skip facts already on the public card so re-runs don't duplicate.
+      let existing = new Set<string>();
+      try {
+        const card = await memClient.getCard();
+        existing = new Set(card.map((f) => `${f.predicate}::${f.object}`));
+      } catch {
+        // Card fetch optional — fall through to declaring everything.
+      }
+      const toDeclare = demoFacts.filter((f) => !existing.has(`${f.predicate}::${f.value}`));
+
+      if (toDeclare.length === 0) {
+        console.log(chalk.dim('\nAll demo facts already declared. Run "zynd bridge card" to review.'));
+        return;
+      }
+
+      console.log(chalk.bold(`\nDeclaring ${toDeclare.length} demo facts to memory-layer…\n`));
+      try {
+        const result = await memClient.declareBatch(toDeclare);
+        console.log(chalk.green(`  ✓ Declared: ${result.declared.length}`));
+        if (result.skipped.length > 0) {
+          console.log(chalk.yellow(`  Skipped: ${result.skipped.length}`));
+          for (const s of result.skipped) {
+            console.log(chalk.dim(`    - ${s.predicate} → ${s.value}${s.reason ? ` (${s.reason})` : ""}`));
+          }
+        }
+        console.log(
+          chalk.dim('\nNext: "zynd bridge card" → your public card. "zynd bridge match" → similar people.')
+        );
+      } catch (err) {
+        console.log(chalk.red(`Seed failed: ${err instanceof Error ? err.message : String(err)}`));
       }
     });
 

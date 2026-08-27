@@ -471,6 +471,93 @@ export async function registerName(opts: RegisterNameOpts): Promise<string> {
   }
 }
 
+export interface ReleaseNameOpts {
+  registryUrl: string;
+  developerKeypair: Ed25519Keypair;
+  developerHandle: string;
+  entityName: string;
+}
+
+// DELETE /v1/names/{developer}/{entity} — releases (unbinds) a name binding.
+// The server verifies ownership via the developer signing "release:" + FQAN.
+export async function releaseName(opts: ReleaseNameOpts): Promise<void> {
+  const { registryUrl, developerKeypair, developerHandle, entityName } = opts;
+  const base = registryUrl.replace(/\/$/, "");
+  const namePath = `/v1/names/${encodeURIComponent(developerHandle)}/${encodeURIComponent(entityName)}`;
+
+  // Fetch the stored binding to obtain the exact FQAN the server will sign-check against.
+  let fqan = "";
+  try {
+    const lookup = await fetch(`${base}${namePath}`);
+    if (lookup.status === 404) {
+      throw new Error(`name not found: ${developerHandle}/${entityName}`);
+    }
+    if (lookup.ok) {
+      const data = (await lookup.json()) as { fqan?: string };
+      fqan = data.fqan ?? "";
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("name not found")) throw err;
+    // Lookup is best-effort — fall back to constructing the FQAN from the hostname.
+  }
+  if (!fqan) {
+    fqan = `${new URL(registryUrl).hostname}/${developerHandle}/${entityName}`;
+  }
+
+  const signable = new TextEncoder().encode(`release:${fqan}`);
+  const signature = sign(developerKeypair.privateKeyBytes, signable);
+
+  let resp: Response;
+  try {
+    resp = await fetch(`${base}${namePath}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${signature}` },
+    });
+  } catch (err) {
+    throw new Error(`releaseName: network error: ${String(err)}`, { cause: err });
+  }
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`releaseName: HTTP ${resp.status}: ${text}`);
+  }
+}
+
+export interface ResolvedEntity {
+  fqan: string;
+  entity_id: string;
+  developer_id?: string;
+  developer_handle: string;
+  registry_host: string;
+  version?: string;
+  entity_url?: string;
+  public_key?: string;
+  status?: string;
+  protocols?: string[];
+  verification_tier?: string;
+  trust_score?: number;
+}
+
+// GET /v1/resolve/{developer}/{entity} — resolves a name binding to entity details.
+export async function resolveName(
+  registryUrl: string,
+  developerHandle: string,
+  entityName: string
+): Promise<ResolvedEntity> {
+  const url = `${registryUrl.replace(/\/$/, "")}/v1/resolve/${encodeURIComponent(developerHandle)}/${encodeURIComponent(entityName)}`;
+  let resp: Response;
+  try {
+    resp = await fetch(url);
+  } catch (err) {
+    throw new Error(`resolveName: network error: ${String(err)}`, { cause: err });
+  }
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`resolveName: HTTP ${resp.status}: ${text}`);
+  }
+  return resp.json() as Promise<ResolvedEntity>;
+}
+
 // GET /v1/categories — returns known entity categories.
 export async function getCategories(registryUrl: string): Promise<string[]> {
   const url = `${registryUrl}/v1/categories`;

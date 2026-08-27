@@ -237,10 +237,42 @@ def prompt_paste():
     print(json.dumps({"li_at": li_at, "jsessionid": jsessionid}))
     sys.exit(0)
 
+def _validate_li_at(li_at, jsessionid):
+    """Verify a captured li_at is still a live LinkedIn session.
+
+    Single bounded HTTP call (no redirect-following, 10s timeout) so a stale
+    cookie can never hang the auth flow. Returns True only on a 200 from the
+    Voyager /me endpoint.
+    """
+    try:
+        import socket
+        socket.setdefaulttimeout(10)
+        import requests
+        jar = requests.cookies.RequestsCookieJar()
+        jar.set("li_at", li_at)
+        js_val = jsessionid if jsessionid else "ajax:0"
+        if not js_val.startswith('"'):
+            js_val = f'"{js_val}"'
+        jar.set("JSESSIONID", js_val)
+        resp = requests.get(
+            "https://www.linkedin.com/voyager/api/me",
+            cookies=jar,
+            headers={
+                "csrf-token": js_val.strip('"'),
+                "Accept": "application/vnd.linkedin.normalized+json+2.1",
+            },
+            timeout=10,
+            allow_redirects=False,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
 try:
-    # Already logged in to LinkedIn in any browser? Use it immediately.
+    # Use a cached browser cookie only if it's still a live session. A stale
+    # li_at fails later at sync time with a confusing "session expired".
     cookies = get_linkedin_cookies()
-    if cookies.get("li_at"):
+    if cookies.get("li_at") and _validate_li_at(cookies["li_at"], cookies.get("JSESSIONID", "")):
         print(json.dumps({"li_at": cookies["li_at"], "jsessionid": cookies.get("JSESSIONID", "")}))
         sys.exit(0)
 
@@ -254,9 +286,11 @@ try:
     while time.time() < deadline:
         time.sleep(3)
         cookies = get_linkedin_cookies()
-        if cookies.get("li_at"):
+        if cookies.get("li_at") and _validate_li_at(cookies["li_at"], cookies.get("JSESSIONID", "")):
             print(json.dumps({"li_at": cookies["li_at"], "jsessionid": cookies.get("JSESSIONID", "")}))
             sys.exit(0)
+        sys.stderr.write(".")
+        sys.stderr.flush()
 
     # Auto-read failed (Arc, new Chrome, etc.) — ask user to paste
     prompt_paste()
@@ -332,7 +366,9 @@ try:
         js_val = f'"{js_val}"'
     jar.set("JSESSIONID", js_val)
 
-    api = Linkedin("", "", cookies=jar, authenticate=True)
+    # authenticate=False — we're already authed via li_at cookie, not credentials.
+    # authenticate=True with empty creds causes a redirect loop (30 redirects error).
+    api = Linkedin("", "", cookies=jar, authenticate=False)
 
     me = api.get_user_profile()
     urn = me.get("entityUrn", "") if isinstance(me, dict) else ""
@@ -489,7 +525,15 @@ export class LinkedInConnector implements IMemoryConnector {
       if (msg.includes("429") || msg.includes("CAPTCHA") || msg.includes("checkpoint")) {
         await engageCooldown().catch(() => {});
       }
-      if (msg.includes("session_expired") || msg.includes("li_at")) {
+      // Stale/expired li_at cookie: open-linkedin-api receives an empty/HTML body
+      // and its internal json.loads throws "Expecting value: line 1 column 1".
+      if (
+        msg.includes("session_expired") ||
+        msg.includes("li_at") ||
+        msg.includes("Expecting value") ||
+        msg.includes("JSONDecodeError") ||
+        msg.includes("not logged in")
+      ) {
         throw new Error("LinkedIn session expired — run: zynd bridge linkedin-auth");
       }
       throw new Error(`LinkedIn sync failed: ${msg}`, { cause: err });
@@ -565,7 +609,7 @@ export class LinkedInConnector implements IMemoryConnector {
       // stdin inherited so user can paste li_at if auto-read fails (Arc/new Chrome)
       const proc = child_process.spawn(
         "uv",
-        ["run", "--with", "cryptography", "python3", scriptPath],
+        ["run", "--with", "cryptography", "--with", "requests", "python3", scriptPath],
         { stdio: ["inherit", "pipe", "inherit"], timeout: 200_000 }
       );
 
