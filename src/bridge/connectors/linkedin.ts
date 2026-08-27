@@ -275,18 +275,18 @@ try:
     sys.stderr.write("Opened LinkedIn in your browser — log in, then we auto-capture.\\n")
     sys.stderr.flush()
 
-    AUTO_TIMEOUT = 60  # auto-read window; falls back to paste after this
+    # Try auto-read for up to 10s — Arc/Chrome AES decryption often fails,
+    # so we fall through quickly to the paste prompt rather than blocking 60s.
+    AUTO_TIMEOUT = 10
     deadline = time.time() + AUTO_TIMEOUT
     while time.time() < deadline:
-        time.sleep(3)
+        time.sleep(2)
         cookies = get_linkedin_cookies()
         if cookies.get("li_at") and _validate_li_at(cookies["li_at"], cookies.get("JSESSIONID", "")):
             print(json.dumps({"li_at": cookies["li_at"], "jsessionid": cookies.get("JSESSIONID", "")}))
             sys.exit(0)
-        sys.stderr.write(".")
-        sys.stderr.flush()
 
-    # Auto-read failed (Arc, new Chrome, etc.) — ask user to paste
+    # Auto-read failed (Arc/new Chrome encrypt differently) — ask user to paste
     prompt_paste()
 
 except Exception as e:
@@ -296,116 +296,121 @@ except Exception as e:
 
 // Uses li_at to fetch profile + connections via open-linkedin-api
 const SYNC_SCRIPT = `
-import http.client, io, json, os, sys, urllib.parse
+import io, json, os, re as _re, sys
 
-# Force UTF-8 for all stdio so non-ASCII names don't break print().
 if hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-# http.client validates header values as latin-1 (HTTP/1.1 spec). LinkedIn
-# sometimes redirects to profile URLs containing non-ASCII script characters
-# (e.g. Thaana, Arabic, CJK). Percent-encode those values before sending so
-# the latin-1 check passes.
-_orig_putheader = http.client.HTTPConnection.putheader
-def _utf8_safe_putheader(self, header, *values):
-    safe = []
-    for v in values:
-        if isinstance(v, str):
-            try:
-                v.encode("latin-1")
-            except UnicodeEncodeError:
-                v = urllib.parse.quote(v, safe=":/?#[]@!$&'()*+,;=% ")
-        safe.append(v)
-    return _orig_putheader(self, header, *safe)
-http.client.HTTPConnection.putheader = _utf8_safe_putheader
-
-import re as _re
-
 li_at      = os.environ.get("LI_AT", "")
 jsessionid = os.environ.get("LI_JSESSIONID", "")
-limit      = int(os.environ.get("LI_LIMIT", "100"))
 
-# Arc's AES-128-CBC decryption garbles the first block (16 bytes) when the IV
-# handling differs. Strip the garbage prefix — real values have known prefixes.
+# Strip Arc AES-CBC first-block garbage — real li_at starts with AQED
 if li_at:
     m = _re.search(r'AQED[A-Za-z0-9_-]+', li_at)
-    if m:
-        li_at = m.group(0)
+    if m: li_at = m.group(0)
+# Normalise jsessionid — strip outer quotes if present
 if jsessionid:
-    m = _re.search(r'ajax:\d+', jsessionid)
-    if m:
-        jsessionid = m.group(0)
+    m = _re.search(r'ajax:\\d+', jsessionid)
+    if m: jsessionid = m.group(0)
 
 if not li_at:
-    print(json.dumps({"error": "LI_AT not set — run: zynd ctx linkedin-auth"}))
+    print(json.dumps({"error": "LI_AT not set — run: zynd bridge linkedin-auth"}))
     sys.exit(1)
 
 try:
-    import requests
-    from open_linkedin_api import Linkedin
-    from requests.cookies import RequestsCookieJar
+    import urllib.request, urllib.error
 
-    # open-linkedin-api._set_session_cookies expects a RequestsCookieJar, not a
-    # plain dict. A dict causes 'dict has no attribute extract_cookies' in requests
-    # internals. JSESSIONID is also required — it doubles as the CSRF token and
-    # _set_session_cookies calls .strip('"') on it.
-    #
-    # Do NOT specify domain/path: cookies without domain_specified=True bypass
-    # DefaultCookiePolicy.return_ok_domain filtering and are always sent,
-    # avoiding the subtle case where domain-qualified cookies get silently dropped.
-    jar = RequestsCookieJar()
-    jar.set("li_at", li_at)
-    js_val = jsessionid if jsessionid else "ajax:0"
-    if not js_val.startswith('"'):
-        js_val = f'"{js_val}"'
-    jar.set("JSESSIONID", js_val)
+    # Set Cookie header directly — avoids requests/cookiejar domain-matching
+    # redirect loops that occur when cookies are set via session.cookies.set().
+    js_cookie = f'"{jsessionid}"' if jsessionid else '"ajax:0"'
+    csrf = jsessionid or "ajax:0"
+    cookie_header = f"li_at={li_at}; JSESSIONID={js_cookie}"
+    common_headers = {
+        "cookie":                       cookie_header,
+        "csrf-token":                   csrf,
+        "user-agent":                   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "x-restli-protocol-version":    "2.0.0",
+        "x-li-lang":                    "en_US",
+        "accept":                       "application/vnd.linkedin.normalized+json+2.1",
+    }
 
-    # authenticate=False — we're already authed via li_at cookie, not credentials.
-    # authenticate=True with empty creds causes a redirect loop (30 redirects error).
-    api = Linkedin("", "", cookies=jar, authenticate=False)
+    def li_get(url):
+        req = urllib.request.Request(url, headers=common_headers)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
 
-    me = api.get_user_profile()
-    urn = me.get("entityUrn", "") if isinstance(me, dict) else ""
-    urn_id = urn.split(":")[-1] if ":" in urn else urn
+    # Step 1: /voyager/api/me → own miniProfile
+    me = li_get("https://www.linkedin.com/voyager/api/me")
+    mini = me.get("miniProfile", me)
+    first     = mini.get("firstName", "")
+    last      = mini.get("lastName", "")
+    headline  = mini.get("occupation", "")
+    public_id = mini.get("publicIdentifier", "")
 
+    if not first and not last:
+        print(json.dumps({"error": "session_expired: profile empty — run: zynd bridge linkedin-auth"}))
+        sys.exit(1)
+
+    # Step 2: profileView → location, summary, experience, skills
     profile_data = {}
-    if urn_id:
+    if public_id:
         try:
-            profile_data = api.get_profile(urn_id=urn_id) or {}
+            profile_data = li_get(
+                f"https://www.linkedin.com/voyager/api/identity/profiles/{public_id}/profileView"
+            )
         except Exception:
             pass
 
-    profile_lines = []
-    for key in ("firstName", "lastName", "headline", "locationName", "summary"):
-        val = profile_data.get(key, "")
-        if val:
-            profile_lines.append(str(val))
+    def _text(obj, *keys):
+        for k in keys:
+            v = obj.get(k, "")
+            if v and isinstance(v, str): return v
+        return ""
 
-    # Extract structured profile fields for tier classification on the TS side
+    # Flatten nested profile structure
+    profile_view = profile_data
+    position_view = profile_view.get("positionView", {})
+    skill_view    = profile_view.get("skillView", {})
+    summary_text  = ""
+
+    # summaryV2 is a rich text object; try plaintext summary from top-level profile too
+    top_profile = profile_view.get("profile", {})
+    if isinstance(top_profile, dict):
+        summary_text = top_profile.get("summary", "") or ""
+        if not headline: headline = top_profile.get("headline", "")
+        location = top_profile.get("locationName", "")
+    else:
+        location = ""
+
     experience = []
-    for exp in (profile_data.get("experience") or []):
+    for pos in (position_view.get("elements") or []):
+        company_name = ""
+        co = pos.get("company", {})
+        if isinstance(co, dict):
+            company_name = co.get("name", "") or (co.get("miniCompany") or {}).get("name", "")
         experience.append({
-            "title":       exp.get("title", ""),
-            "company":     exp.get("companyName", "") or exp.get("company", {}).get("miniCompany", {}).get("name", ""),
-            "description": (exp.get("description") or "")[:300],
+            "title":       pos.get("title", ""),
+            "company":     company_name,
+            "description": (pos.get("description") or "")[:300],
         })
 
     skills = []
-    for skill in (profile_data.get("skills") or []):
-        name = skill.get("name", "") if isinstance(skill, dict) else str(skill)
-        if name:
-            skills.append(name)
+    for sk in (skill_view.get("elements") or []):
+        name = (sk.get("skill") or {}).get("name", "")
+        if name: skills.append(name)
+
+    profile_lines = [x for x in [first + " " + last, headline, location, summary_text] if x.strip()]
 
     print(json.dumps({
         "profile_text": "\\n".join(profile_lines),
         "profile": {
-            "firstName":  profile_data.get("firstName", ""),
-            "lastName":   profile_data.get("lastName", ""),
-            "headline":   profile_data.get("headline", ""),
-            "summary":    profile_data.get("summary", ""),
-            "location":   profile_data.get("locationName", ""),
-            "experience": experience,
-            "skills":     skills,
+            "firstName":  first,
+            "lastName":   last,
+            "headline":   headline,
+            "summary":    summary_text,
+            "location":   location,
+            "experience": experience[:10],
+            "skills":     skills[:30],
         },
     }))
 
@@ -709,15 +714,21 @@ export class LinkedInConnector implements IMemoryConnector {
       result = await this.runSync();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // 429 or auth checkpoint → engage cooldown
-      if (msg.includes("429") || msg.includes("CAPTCHA") || msg.includes("checkpoint")) {
+      // 429, CAPTCHA, checkpoint, or 302 redirect loop → rate-limited, engage cooldown
+      if (
+        msg.includes("429") ||
+        msg.includes("CAPTCHA") ||
+        msg.includes("checkpoint") ||
+        msg.includes("302") ||
+        msg.includes("infinite loop") ||
+        msg.includes("redirect")
+      ) {
         await engageCooldown().catch(() => {});
+        throw new Error("LinkedIn rate-limited — cooldown engaged, retry in ~1 hour");
       }
-      // Stale/expired li_at cookie: open-linkedin-api receives an empty/HTML body
-      // and its internal json.loads throws "Expecting value: line 1 column 1".
+      // Stale/expired li_at
       if (
         msg.includes("session_expired") ||
-        msg.includes("li_at") ||
         msg.includes("Expecting value") ||
         msg.includes("JSONDecodeError") ||
         msg.includes("not logged in")
@@ -917,7 +928,8 @@ export class LinkedInConnector implements IMemoryConnector {
 
       const proc = child_process.spawn(
         "uv",
-        ["run", "--with", "open-linkedin-api", "python3", scriptPath],
+        // SYNC_SCRIPT uses stdlib urllib only — no packages needed
+        ["run", "python3", scriptPath],
         { env, stdio: ["ignore", "pipe", "pipe"], timeout: 90_000 }
       );
 
