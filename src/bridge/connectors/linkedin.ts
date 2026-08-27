@@ -240,31 +240,25 @@ def prompt_paste():
 def _validate_li_at(li_at, jsessionid):
     """Verify a captured li_at is still a live LinkedIn session.
 
-    Single bounded HTTP call (no redirect-following, 10s timeout) so a stale
-    cookie can never hang the auth flow. Returns True only on a 200 from the
-    Voyager /me endpoint.
+    Uses the same open-linkedin-api get_user_profile() call the sync path uses
+    (authenticate=False), so a cookie that validates here also syncs. A stale
+    cookie throws a JSONDecodeError here (not a 200), so it is rejected and the
+    auth flow falls through to a fresh browser login. Socket timeout bounds it.
     """
     try:
         import socket
         socket.setdefaulttimeout(10)
-        import requests
-        jar = requests.cookies.RequestsCookieJar()
+        from open_linkedin_api import Linkedin
+        from requests.cookies import RequestsCookieJar
+        jar = RequestsCookieJar()
         jar.set("li_at", li_at)
         js_val = jsessionid if jsessionid else "ajax:0"
         if not js_val.startswith('"'):
             js_val = f'"{js_val}"'
         jar.set("JSESSIONID", js_val)
-        resp = requests.get(
-            "https://www.linkedin.com/voyager/api/me",
-            cookies=jar,
-            headers={
-                "csrf-token": js_val.strip('"'),
-                "Accept": "application/vnd.linkedin.normalized+json+2.1",
-            },
-            timeout=10,
-            allow_redirects=False,
-        )
-        return resp.status_code == 200
+        api = Linkedin("", "", cookies=jar, authenticate=False)
+        me = api.get_user_profile()
+        return bool(me and (me.get("entityUrn") or me.get("miniProfile") or me.get("firstName")))
     except Exception:
         return False
 
@@ -609,7 +603,7 @@ export class LinkedInConnector implements IMemoryConnector {
       // stdin inherited so user can paste li_at if auto-read fails (Arc/new Chrome)
       const proc = child_process.spawn(
         "uv",
-        ["run", "--with", "cryptography", "--with", "requests", "python3", scriptPath],
+        ["run", "--with", "cryptography", "--with", "open-linkedin-api", "python3", scriptPath],
         { stdio: ["inherit", "pipe", "inherit"], timeout: 200_000 }
       );
 
