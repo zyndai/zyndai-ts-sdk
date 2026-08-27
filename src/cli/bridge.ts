@@ -510,6 +510,108 @@ export function registerBridgeCommand(program: Command): void {
       }
     });
 
+  // zynd bridge linkedin-search <keywords>  (PRD: search_people, gated)
+  bridge
+    .command("linkedin-search <keywords>")
+    .description("Search LinkedIn people by keyword (gated — rate-limited, max 25 results)")
+    .option("--depth <depth>", "Network depth: F=1st, S=2nd, O=other", "F")
+    .option("--limit <n>", "Max results (capped at 25)", "10")
+    .action(async (keywords: string, opts: { depth: string; limit: string }) => {
+      const config = loadBridgeConfig();
+      const li = config.providers.linkedin;
+      if (!li?.li_at) {
+        console.error(chalk.red("LinkedIn not authenticated — run: zynd bridge linkedin-auth"));
+        process.exit(1);
+      }
+      const connector = new LinkedInConnector();
+      await connector.connect({ li_at: li.li_at, jsessionid: li.jsessionid ?? "" });
+      console.log(chalk.dim(`Searching LinkedIn for "${keywords}"…`));
+      try {
+        const results = await connector.searchPeople({
+          keywords,
+          depth: (opts.depth as "F" | "S" | "O") ?? "F",
+          limit: Math.min(parseInt(opts.limit, 10) || 10, 25),
+        });
+        if (results.length === 0) {
+          console.log(chalk.yellow("No results."));
+          return;
+        }
+        for (const p of results) {
+          console.log(`\n${chalk.bold(p.name)}  ${chalk.dim(p.url)}`);
+          if (p.headline) console.log(`  ${p.headline}`);
+          if (p.location) console.log(`  ${chalk.dim(p.location)}`);
+        }
+        console.log(chalk.dim(`\n${results.length} result(s)`));
+      } catch (err) {
+        console.error(chalk.red(`Search failed: ${err instanceof Error ? err.message : String(err)}`));
+        process.exit(1);
+      }
+    });
+
+  // zynd bridge linkedin-person <public-id>  (PRD: get_person_profile, gated)
+  bridge
+    .command("linkedin-person <public-id>")
+    .description("Fetch a LinkedIn person profile by public ID (e.g. sahilw) — gated, rate-limited")
+    .action(async (publicId: string) => {
+      const config = loadBridgeConfig();
+      const li = config.providers.linkedin;
+      if (!li?.li_at) {
+        console.error(chalk.red("LinkedIn not authenticated — run: zynd bridge linkedin-auth"));
+        process.exit(1);
+      }
+      const connector = new LinkedInConnector();
+      await connector.connect({ li_at: li.li_at, jsessionid: li.jsessionid ?? "" });
+      console.log(chalk.dim(`Fetching profile: ${publicId}…`));
+      try {
+        const p = await connector.getPersonProfile(publicId);
+        console.log(`\n${chalk.bold(`${p.name}`)}  ${chalk.dim(p.url)}`);
+        if (p.headline) console.log(`  ${p.headline}`);
+        if (p.location) console.log(`  ${chalk.dim(p.location)}`);
+        if (p.experience?.length) {
+          console.log(chalk.bold("\n  Experience:"));
+          for (const e of p.experience.slice(0, 5)) {
+            console.log(`    ${e.title} @ ${e.company}`);
+          }
+        }
+        if (p.skills?.length) {
+          console.log(chalk.bold("\n  Skills:") + "  " + p.skills.slice(0, 10).join(", "));
+        }
+      } catch (err) {
+        console.error(chalk.red(`Failed: ${err instanceof Error ? err.message : String(err)}`));
+        process.exit(1);
+      }
+    });
+
+  // zynd bridge linkedin-company <public-id>  (PRD: get_company_profile, gated)
+  bridge
+    .command("linkedin-company <public-id>")
+    .description("Fetch a LinkedIn company profile by public ID (e.g. openai) — gated, rate-limited")
+    .action(async (publicId: string) => {
+      const config = loadBridgeConfig();
+      const li = config.providers.linkedin;
+      if (!li?.li_at) {
+        console.error(chalk.red("LinkedIn not authenticated — run: zynd bridge linkedin-auth"));
+        process.exit(1);
+      }
+      const connector = new LinkedInConnector();
+      await connector.connect({ li_at: li.li_at, jsessionid: li.jsessionid ?? "" });
+      console.log(chalk.dim(`Fetching company: ${publicId}…`));
+      try {
+        const c = await connector.getCompanyProfile(publicId);
+        console.log(`\n${chalk.bold(c.name)}  ${chalk.dim(c.url)}`);
+        if (c.industry) console.log(`  Industry: ${c.industry}`);
+        if (c.headcount) console.log(`  Headcount: ~${c.headcount}`);
+        if (c.description) console.log(`  ${chalk.dim(c.description.slice(0, 200))}`);
+        if (c.specialities?.length) {
+          console.log("  Specialities: " + c.specialities.join(", "));
+        }
+        if (c.website) console.log(`  ${chalk.dim(c.website)}`);
+      } catch (err) {
+        console.error(chalk.red(`Failed: ${err instanceof Error ? err.message : String(err)}`));
+        process.exit(1);
+      }
+    });
+
   // zynd bridge mcp-setup
   bridge
     .command("mcp-setup")
