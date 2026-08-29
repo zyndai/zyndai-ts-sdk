@@ -1,15 +1,15 @@
 # zyndai
 
-TypeScript SDK for building agents and services on the ZyndAI Network. Register with the network, expose an HTTP webhook endpoint the network calls back into, and emit signed WebSocket heartbeats to signal liveness.
+TypeScript SDK for building multi-framework AI agents and services on the Zynd AI Network. Register with the network over the [A2A protocol](https://github.com/google/A2A), expose a JSON-RPC endpoint at `/a2a/v1`, serve a signed Agent Card at `/.well-known/agent-card.json`, and emit signed WebSocket heartbeats to signal liveness. Supports Ed25519 identity, agent discovery, x402 micropayments, and one-shot deployment via `zynd deploy`.
 
 Dual ESM/CJS — works with both `import` and `require`. Node.js >= 18 required.
 
 | | `ZyndAIAgent` | `ZyndService` |
-|---|---|---|
+|---|---|---|---|
 | Use case | LLM frameworks, reasoning, tool use | Plain functions, API wrapping, utilities |
 | ID prefix | `zns:<hash>` | `zns:svc:<hash>` |
-| CLI | `zynd agent init / run` | `zynd service init / run` |
-| Shared | Ed25519 identity, heartbeat, webhook server, x402 payments, registry (via `ZyndBase`) | |
+| CLI | `zynd agent init / run / deploy` | `zynd service init / run / deploy` |
+| Shared | Ed25519 identity, heartbeat, A2A server, x402 payments, registry (via `ZyndBase`) | |
 
 ---
 
@@ -27,16 +27,16 @@ yarn add zyndai
 
 ## Quick start — CLI scaffold
 
-> **The webhook URL must be publicly reachable.** The ZyndAI Network calls back into your agent over HTTP. `localhost` will not receive those callbacks.
+> **The A2A URL must be publicly reachable.** The Zynd AI Network calls back into your agent over the A2A JSON-RPC endpoint. `localhost` will not receive those callbacks.
 > For local development, expose the port with a tunnel: `ngrok http 5000` or `cloudflared tunnel --url http://localhost:5000`. Set `ZYND_ENTITY_URL` to the tunnel's public URL before starting.
 
-### 1. Create your developer identity
+### 1. Authenticate with a registry
 
 ```bash
-npx zynd init
+npx zynd auth login --registry https://zns01.zynd.ai
 ```
 
-This generates `~/.zynd/developer.json` (Ed25519 keypair, mode 0600). All agent and service keys are derived from this key. Run it once per machine.
+This opens a browser onboarding flow and writes your developer identity to `~/.zynd/developer.json` (Ed25519 keypair, mode 0600). All agent and service keys are derived from this identity. Run it once per machine.
 
 ### 2. Scaffold an agent or service
 
@@ -95,7 +95,7 @@ npx zynd service run
 
 ## Quick start — programmatic
 
-> **Webhook URL must be publicly reachable.** Set `entityUrl` (or `ZYND_ENTITY_URL`) to a public URL. The `webhookPort` is the local port the Express server binds to.
+> **A2A URL must be publicly reachable.** Set `entityUrl` (or `ZYND_ENTITY_URL`) to a public URL. The `serverPort` is the local port the A2A server binds to.
 
 ### Service
 
@@ -105,8 +105,10 @@ import { ZyndService } from "zyndai";
 const service = new ZyndService({
   name: "text-transform",
   description: "Converts text to uppercase",
-  capabilities: { text: ["transform"] },
-  webhookPort: 5000,
+  skills: [
+    { id: "uppercase", name: "Uppercase text", description: "Converts text to uppercase", tags: ["transform"] },
+  ],
+  serverPort: 5000,
   entityUrl: "https://your-public-domain.com", // must be reachable; also used as service_endpoint by default
   registryUrl: "https://zns01.zynd.ai",
   keypairPath: process.env.ZYND_SERVICE_KEYPAIR_PATH,
@@ -116,19 +118,22 @@ const service = new ZyndService({
 service.setHandler((input) => input.toUpperCase());
 
 await service.start();
-console.log("Webhook:", service.webhookUrl);
+console.log("A2A URL:", service.a2aUrl);
+console.log("Card URL:", service.cardUrl);
 ```
 
 ### Agent (custom function)
 
 ```ts
-import { ZyndAIAgent, AgentMessage } from "zyndai";
+import { ZyndAIAgent } from "zyndai";
 
 const agent = new ZyndAIAgent({
   name: "echo-agent",
   description: "Echoes back whatever you send",
-  capabilities: { text: ["echo"] },
-  webhookPort: 5001,
+  skills: [
+    { id: "echo", name: "Echo", description: "Echoes back whatever you send" },
+  ],
+  serverPort: 5001,
   entityUrl: "https://your-public-domain.com", // must be reachable
   registryUrl: "https://zns01.zynd.ai",
   keypairPath: process.env.ZYND_AGENT_KEYPAIR_PATH,
@@ -136,13 +141,9 @@ const agent = new ZyndAIAgent({
 
 agent.setCustomAgent(async (input) => `Echo: ${input}`);
 
-agent.webhook.addMessageHandler(async (msg: AgentMessage) => {
-  const result = await agent.invoke(msg.content);
-  agent.webhook.setResponse(msg.messageId, result);
-});
-
 await agent.start();
-console.log("Webhook:", agent.webhookUrl);
+console.log("A2A URL:", agent.a2aUrl);
+console.log("Card URL:", agent.cardUrl);
 ```
 
 ### Agent (LangChain.js)
@@ -166,20 +167,24 @@ agent.setCustomAgent(async (input) => "response");
 ### Calling another agent
 
 ```ts
-import { SearchAndDiscoveryManager } from "zyndai";
+import { SearchAndDiscoveryManager, A2AClient, taskReplyText } from "zyndai";
 
 const search = new SearchAndDiscoveryManager("https://zns01.zynd.ai");
 const results = await search.searchEntities({ query: "stock price" });
 const target = results[0];
 
-const invokeUrl = `${target.entity_url}/webhook/sync`;
-const resp = await fetch(invokeUrl, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ content: "What is AAPL?", sender_id: agent.entityId }),
+const client = new A2AClient({
+  keypair: agent.keypair,
+  entityId: agent.entityId,
 });
-const data = await resp.json();
-console.log(data.response);
+
+const task = await client.sync({
+  url: `${target.url}/a2a/v1`, // `target.entity_url` also works for older records
+  text: "What is AAPL?",
+  blocking: true,
+});
+
+console.log(task.status, taskReplyText(task));
 ```
 
 ---
@@ -192,34 +197,44 @@ console.log(data.response);
 |---|---|---|---|
 | `name` | `string` | `""` | Display name |
 | `description` | `string` | `""` | Description |
-| `capabilities` | `Record<string, unknown>` | — | Structured capabilities advertised on the entity card |
+| `version` | `string` | `"0.1.0"` | Agent/service semver |
 | `category` | `string` | `"general"` | Registry category |
 | `tags` | `string[]` | — | Searchable tags |
-| `summary` | `string` | — | Short description |
-| `webhookHost` | `string` | `"0.0.0.0"` | Bind address for the Express server |
-| `webhookPort` | `number` | `5000` | Local port the webhook server listens on |
-| `entityUrl` | `string` | — | Public base URL advertised to the registry (required for inbound calls) |
-| `webhookUrl` | `string` | — | Override the full webhook URL if non-standard |
 | `registryUrl` | `string` | `"https://zns01.zynd.ai"` | Registry endpoint |
+| `entityUrl` | `string` | — | Public base URL advertised to the registry (required for inbound calls) |
+| `serverHost` | `string` | `"0.0.0.0"` | Bind address for the A2A server |
+| `serverPort` | `number` | `5000` | Local port the A2A server listens on |
+| `a2aPath` | `string` | `"/a2a/v1"` | A2A JSON-RPC endpoint path |
+| `authMode` | `"strict" \| "permissive" \| "open"` | `"permissive"` | Inbound x-zynd-auth verification mode |
+| `cardOutput` | `string` | `.well-known/agent-card.json` | Path to write the signed A2A AgentCard |
+| `protocolVersion` | `string` | `"0.3.0"` | A2A protocol version |
+| `provider` | `{ organization: string; url?: string }` | — | Agent card provider block |
+| `iconUrl` | `string` | — | Agent card icon URL |
+| `documentationUrl` | `string` | — | Agent card documentation URL |
+| `defaultInputModes` | `string[]` | — | Agent card default input modes |
+| `defaultOutputModes` | `string[]` | — | Agent card default output modes |
+| `capabilities` | `{ streaming?: boolean; pushNotifications?: boolean; stateTransitionHistory?: boolean }` | — | A2A capabilities advertised on the card |
+| `skills` | `{ id, name, description?, tags?, examples?, inputModes?, outputModes? }[]` | — | A2A skills advertised on the card |
+| `fqan` | `string` | — | Fully-qualified agent name (optional) |
 | `price` | `string` | — | x402 price string, e.g. `"$0.01"` |
 | `entityPricing` | `{ base_price_usd: number; currency: string }` | — | Structured pricing (alternative to `price`) |
 | `keypairPath` | `string` | — | Path to keypair JSON file |
 | `configDir` | `string` | — | Directory to search for keypair when `keypairPath` is unset |
 | `developerKeypairPath` | `string` | — | Developer key for HD derivation |
 | `entityIndex` | `number` | — | HD derivation index |
-| `messageHistoryLimit` | `number` | `100` | Maximum stored messages in webhook history |
-| `autoReconnect` | `boolean` | `true` | Reconnect heartbeat WebSocket on drop |
+| `messageHistoryLimit` | `number` | `100` | Maximum stored messages in A2A task history |
+| `maxBodyBytes` | `number` | `25 * 1024 * 1024` | Max inbound A2A request body in bytes |
 
 `ServiceConfig` adds:
 
 | Field | Type | Description |
 |---|---|---|
-| `serviceEndpoint` | `string` | URL advertised to the registry as the service's callable endpoint. Defaults to `entityUrl` — set this only when the registry should publish a different URL (e.g., an ngrok tunnel while `webhookHost` is bound locally). |
+| `serviceEndpoint` | `string` | URL advertised to the registry as the service's callable endpoint. Defaults to `entityUrl` — set this only when the registry should publish a different URL (e.g., an ngrok tunnel while `serverHost` is bound locally). |
 | `openapiUrl` | `string` | OpenAPI spec URL (informational) |
 
 ### Payload validation
 
-Pass Zod schemas to validate inbound and outbound payloads at runtime:
+Pass Zod schemas to validate inbound A2A payloads and handler responses at runtime:
 
 ```ts
 import { z } from "zod";
@@ -229,13 +244,13 @@ const RequestPayload = z.object({ prompt: z.string() });
 const ResponsePayload = z.object({ response: z.string() });
 
 const agent = new ZyndAIAgent(config, {
-  payloadModel: RequestPayload,   // validates every POST to /webhook
-  outputModel: ResponsePayload,   // validates every setResponse() call
+  payloadModel: RequestPayload,   // validates every inbound message/send payload
+  outputModel: ResponsePayload,   // validates every handler response
   maxFileSizeBytes: 25 * 1024 * 1024, // default 25 MiB
 });
 ```
 
-Schemas are converted to JSON Schema and published on `/.well-known/agent.json` as `input_schema` / `output_schema`. If the payload schema contains a field typed as `z.array(Attachment)`, the entity card also gets `accepts_files: true`.
+Schemas are converted to JSON Schema and published on `/.well-known/agent-card.json` as `input_schema` / `output_schema`. If the payload schema contains a field typed as `z.array(Attachment)`, the agent card also gets `accepts_files: true`.
 
 ### Environment variables
 
@@ -243,11 +258,13 @@ Schemas are converted to JSON Schema and published on `/.well-known/agent.json` 
 |---|---|
 | `ZYND_AGENT_KEYPAIR_PATH` | Path to agent keypair JSON |
 | `ZYND_SERVICE_KEYPAIR_PATH` | Path to service keypair JSON |
-| `ZYND_DEVELOPER_KEYPAIR_PATH` | Path to developer keypair JSON (overrides `~/.zynd/developer.json`) |
+| `ZYND_DEVELOPER_KEYPAIR_PATH` | Path to developer keypair JSON (overrides registry-login default location) |
 | `ZYND_AGENT_PRIVATE_KEY` | Base64-encoded private key (alternative to file) |
 | `ZYND_REGISTRY_URL` | Registry URL override |
 | `ZYND_HOME` | Config directory (default: `~/.zynd`) |
 | `ZYND_ENTITY_URL` | Public base URL for the entity (overrides config) |
+| `ZYND_DEPLOYER_URL` | Default deployer base URL for `zynd deploy` |
+| `ZYND_DEV` | Set to `1` to enable the schema-aware dev UI at `GET /` |
 
 Keypair resolution order (first match wins):
 
@@ -303,7 +320,7 @@ Every **30 seconds** it sends a signed ping:
 
 The timestamp is second-precision UTC (`YYYY-MM-DDTHH:MM:SSZ` — no milliseconds). The registry's ISO parser and the Python SDK both require this format; a millisecond suffix causes signature mismatch and the registry closes the connection. The SDK strips the milliseconds automatically via `new Date().toISOString().replace(/\.\d{3}Z$/, "Z")`.
 
-The timestamp is signed with the entity's private key. The registry uses this to determine liveness. If the connection drops, the SDK reconnects automatically after 5 seconds (configurable via `autoReconnect`).
+The timestamp is signed with the entity's private key. The registry uses this to determine liveness. If the connection drops, the SDK reconnects automatically after 5 seconds.
 
 ### How registration works
 
@@ -316,19 +333,19 @@ The timestamp is signed with the entity's private key. The registry uses this to
 
 This makes `start()` idempotent. Restarting the process, redeploying, or running against a registry that already has a record for this keypair all converge to the same outcome: the entity's record reflects the latest config.
 
-If the developer keypair (`~/.zynd/developer.json`) is absent, registration is skipped with a warning and the webhook + heartbeat still start. This allows containerized deployments that ship only the entity keypair.
+If the developer identity is absent, registration is skipped with a warning and the A2A server + heartbeat still start. This allows containerized deployments that ship only the entity keypair. Run `zynd auth login --registry <url>` to obtain a developer identity when you need full registry ownership proofs.
 
 ### service_endpoint
 
 The ZyndAI registry requires a `service_endpoint` field when registering a `ZyndService`. The SDK defaults it to the entity's public URL (`entityUrl`) automatically — you do not need to set it.
 
-Set `serviceEndpoint` explicitly only when you want the registry to advertise a URL that differs from the SDK's local webhook URL. The typical case is a tunnel during local development:
+Set `serviceEndpoint` explicitly only when you want the registry to advertise a URL that differs from the SDK's local A2A server URL. The typical case is a tunnel during local development:
 
 ```ts
 const service = new ZyndService({
   name: "text-transform",
-  webhookHost: "0.0.0.0",   // binds locally
-  webhookPort: 5000,
+  serverHost: "0.0.0.0",   // binds locally
+  serverPort: 5000,
   entityUrl: "http://localhost:5000",  // SDK uses this as its base
   serviceEndpoint: "https://abc123.ngrok.io",  // what the registry publishes
   registryUrl: "https://zns01.zynd.ai",
@@ -338,9 +355,9 @@ const service = new ZyndService({
 
 In production, where `entityUrl` is already a public domain, omit `serviceEndpoint` entirely.
 
-### Webhook
+### A2A server
 
-`agent.start()` binds an Express server on `webhookPort` (default 5000). The ZyndAI Network sends messages to this server. **The URL registered with the network must be publicly reachable from the internet — `localhost` will not work.**
+`agent.start()` (or `service.start()`) binds an Express server on `serverPort` (default 5000). The Zynd AI Network sends A2A JSON-RPC requests to this server. **The URL registered with the network must be publicly reachable from the internet — `localhost` will not work.**
 
 When `entity_url` resolves to a loopback address (`localhost`, `127.x.x.x`, `0.0.0.0`, `::1`), the SDK logs a yellow warning at startup. It still registers and runs — the warning is a reminder, not a hard stop.
 
@@ -358,19 +375,44 @@ cloudflared tunnel --url http://localhost:5000
 
 **Production:** deploy behind a domain and set `entityUrl` in config or `ZYND_ENTITY_URL` in environment.
 
-The webhook server fails hard on `EADDRINUSE` — it does not silently move to a different port. If port 5000 is in use, stop the conflicting process or set a different `webhookPort`.
+The A2A server fails hard on `EADDRINUSE` — it does not silently move to a different port. If port 5000 is in use, stop the conflicting process or set a different `serverPort`.
 
-#### Webhook endpoints
+#### A2A endpoints
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/webhook` | POST | Async message — returns `{ status: "received", message_id }` immediately; handler runs in background |
-| `/webhook/sync` | POST | Sync request/response — waits up to **30 seconds** for `setResponse(messageId, ...)` before returning 408 |
-| `/webhook/response/:message_id` | GET | Poll for an async response by message ID |
+| `/a2a/v1` | POST | A2A JSON-RPC — `message/send` (sync/async), `message/stream`, `task/query`, `task/cancel`, push-notification methods |
 | `/health` | GET | `{ status: "ok", entity_id, timestamp }` |
-| `/.well-known/agent.json` | GET | Signed entity card with capabilities, endpoints, pricing, and schemas |
+| `/.well-known/agent-card.json` | GET | Signed A2A Agent Card with skills, capabilities, pricing, and schemas |
+
+`message/send` accepts a `configuration.blocking` flag. When `blocking: true` (default), the server waits for the handler to finish and returns the final task state. When `blocking: false`, it returns the task in `working` state immediately and the caller can poll `task/query` or use `message/stream` for updates.
+
+#### Dev UI
+
+Set `ZYND_DEV=1` (or pass `devMode: true`) to serve an interactive, schema-aware HTML test UI at `GET /`:
+
+```bash
+ZYND_DEV=1 npx zynd agent run
+# open http://localhost:5000 in your browser
+```
+
+The page introspects the configured `payloadModel` and renders typed inputs for each Zod field, then POSTs A2A JSON-RPC to `/a2a/v1` and renders the response inline. Dev mode also forces `authMode="open"` so you can test locally without signing outbound requests.
 
 #### Payload format
+
+Handlers receive a `HandlerInput`:
+
+```ts
+interface HandlerInput {
+  message: AgentMessage;   // text content, sender/receiver IDs, metadata
+  payload: Record<string, unknown>; // validated + merged DataParts
+  attachments: Attachment[];
+  fromAgent: boolean;
+  signed: boolean;         // true when the inbound message was Zynd-signed and verified
+}
+```
+
+`AgentMessage` is still available for constructing or inspecting messages:
 
 ```ts
 import { AgentMessage } from "zyndai";
@@ -390,14 +432,14 @@ AgentMessage.fromDict(dict);
 AgentMessage.fromJson(json);  // handles invalid JSON gracefully
 ```
 
-### Webhook signature verification
+### Agent Card signature verification
 
-The entity card at `/.well-known/agent.json` is signed with the entity's Ed25519 private key. Callers can verify it:
+The Agent Card at `/.well-known/agent-card.json` is signed with the entity's Ed25519 private key. Callers can verify it:
 
 ```ts
 import { verify } from "zyndai";
 
-const card = await fetch("https://your-agent.com/.well-known/agent.json").then(r => r.json());
+const card = await fetch("https://your-agent.com/.well-known/agent-card.json").then(r => r.json());
 const isValid = verify(
   card.public_key.replace("ed25519:", ""),
   new TextEncoder().encode(JSON.stringify({ ...card, signature: undefined })),
@@ -405,33 +447,42 @@ const isValid = verify(
 );
 ```
 
-### Entity card
+### Agent Card
 
-The entity card is written to `.well-known/agent.json` on startup and served live at `GET /.well-known/agent.json`:
+The Agent Card is written to `.well-known/agent-card.json` on startup and served live at `GET /.well-known/agent-card.json`:
 
 ```json
 {
-  "entity_id": "zns:a90cb541...",
-  "public_key": "ed25519:jfYH...",
+  "protocolVersion": "0.3.0",
   "name": "stock-agent",
-  "version": "1.0",
-  "status": "online",
-  "capabilities": [{ "name": "nlp", "category": "ai" }],
-  "endpoints": {
-    "invoke": "https://example.com/webhook/sync",
-    "invoke_async": "https://example.com/webhook",
-    "health": "https://example.com/health",
-    "agent_card": "https://example.com/.well-known/agent.json"
+  "description": "Answers stock-price questions",
+  "version": "1.0.0",
+  "url": "https://example.com/a2a/v1",
+  "preferredTransport": "JSONRPC",
+  "capabilities": { "streaming": true, "pushNotifications": true, "stateTransitionHistory": false },
+  "defaultInputModes": ["text"],
+  "defaultOutputModes": ["text"],
+  "skills": [
+    { "id": "stock", "name": "Stock price", "description": "Look up a stock price", "tags": ["finance"], "inputModes": ["text"], "outputModes": ["text"] }
+  ],
+  "logos": null,
+  "securitySchemes": {
+    "zyndSig": { "type": "http", "scheme": "ed25519-envelope", "description": "Per-message Ed25519 signature in Message.metadata['x-zynd-auth']" }
   },
-  "pricing": {
-    "model": "per-request",
-    "currency": "USDC",
-    "rates": { "default": 0.01 },
-    "payment_methods": ["x402"]
+  "security": [{ "zyndSig": [] }],
+  "x-zynd": {
+    "version": 1,
+    "entityId": "zns:a90cb541...",
+    "publicKey": "ed25519:jfYH...",
+    "walletAddress": "0x...",
+    "status": "online",
+    "inputSchema": { "type": "object", "properties": { "prompt": { "type": "string" } } },
+    "outputSchema": { "type": "object", "properties": { "response": { "type": "string" } } },
+    "lastUpdatedAt": "2026-05-29T12:00:00.000Z"
   },
-  "input_schema": { "type": "object", "properties": { "prompt": { "type": "string" } } },
-  "output_schema": { "type": "object", "properties": { "response": { "type": "string" } } },
-  "signature": "ed25519:bFRE..."
+  "signatures": [
+    { "protected": "eyJhbGciOiJFZERTQSIsInR5cCI6ImFnZW50LWNhcmQramNzK2p3cyJ9", "signature": "...", "header": { "kid": "ed25519:jfYH" } }
+  ]
 }
 ```
 
@@ -448,7 +499,7 @@ const agent = new ZyndAIAgent({
 });
 ```
 
-The ETH payment address is derived deterministically from the Ed25519 private key via `SHA-256(privateKeyBytes)`.
+The ETH payment address is derived deterministically from the Ed25519 private key via `SHA-256(privateKeyBytes)` and is published in the Agent Card's `x-zynd.walletAddress` field.
 
 ### End-to-end encryption
 
@@ -468,16 +519,16 @@ Uses X25519-AES256-GCM.
 
 The CLI binary is `zynd` (installed as `node_modules/.bin/zynd` or invoked as `npx zynd`).
 
-### `zynd init`
+### `zynd auth login`
 
-Create the developer identity. Must be run once before `zynd agent init` or `zynd service init`.
+Authenticate with a Zynd registry and store the developer identity.
 
 ```
 Options:
-  --force    Overwrite existing developer key
+  --registry <url>   Registry to authenticate against (required)
 ```
 
-Writes `~/.zynd/developer.json` (mode 0600) and `~/.zynd/config.json`.
+Opens a browser onboarding flow and writes `~/.zynd/developer.json` (mode 0600) and `~/.zynd/config.json`. Run once per machine before `zynd agent init` / `zynd service init`.
 
 ### `zynd agent init`
 
@@ -497,14 +548,14 @@ Python framework keys: `langchain`, `langgraph`, `crewai`, `pydantic-ai`, `custo
 Generated files (TypeScript):
 
 ```
-agent.config.json     runtime config (name, framework, language, port, registry URL, derivation index)
-agent.ts              framework-specific entry point
-payload.ts            Zod RequestPayload / ResponsePayload schemas
-.env                  ZYND_AGENT_KEYPAIR_PATH, ZYND_REGISTRY_URL, framework API key stubs
-package.json          pre-configured with start script and framework deps
+agent.config.json       runtime config (name, framework, language, port, registry URL, derivation index)
+agent.ts                framework-specific entry point
+payload.ts              Zod RequestPayload / ResponsePayload schemas
+.env                    ZYND_AGENT_KEYPAIR_PATH, ZYND_REGISTRY_URL, framework API key stubs
+package.json            pre-configured with start script and framework deps
 tsconfig.json
 .gitignore
-.well-known/agent.json  placeholder, regenerated on first run
+.well-known/agent-card.json  placeholder, regenerated on first run
 ```
 
 Keypair is stored at `~/.zynd/agents/<slug>/keypair.json`, referenced from `.env`.
@@ -515,10 +566,10 @@ Start the agent from the current directory.
 
 ```
 Options:
-  --port <number>    Override webhook port
+  --port <number>    Override server port (A2A server bind port)
 ```
 
-Reads `agent.config.json`, detects the language, spawns `npx tsx agent.ts` (TS) or `python3 agent.py` (Python). Falls back to an in-process echo agent if no entry file exists.
+Reads `agent.config.json`, detects the language, spawns `npx tsx agent.ts` (TS) or `python3 agent.py` (Python). Falls back to an in-process echo agent if no entry file exists. Set `ZYND_DEV=1` to enable the dev UI at `GET /`.
 
 ### `zynd service init`
 
@@ -538,8 +589,22 @@ Start the service from the current directory.
 
 ```
 Options:
-  --port <number>    Override webhook port
+  --port <number>    Override server port (A2A server bind port)
 ```
+
+### `zynd deploy`
+
+Deploy the current agent or service project to a Zynd deployer instance.
+
+```
+Options:
+  --deployer <url>   Deployer base URL (falls back to $ZYND_DEPLOYER_URL)
+  --keypair <path>   Override the keypair path
+  --image <ref>      Pin a specific zynd-labelled Docker image
+  --language <ts|py> Force runtime detection
+```
+
+The command zips the project (excluding build/dependency noise), uploads it with the entity keypair, and prints the resulting deployment id, slug, runtime, and public URL.
 
 ---
 
