@@ -218,6 +218,10 @@ export const A2A_AUTHENTICATED_EXTENDED_CARD_NOT_CONFIGURED = -32007;
 export const ZYND_AUTH_FAILED = -32100;
 export const ZYND_REPLAY_DETECTED = -32101;
 export const ZYND_AUTH_EXPIRED = -32102;
+/** x402: the call needs a payment (HTTP 402). `error.data` carries the challenge. */
+export const ZYND_PAYMENT_REQUIRED = -32103;
+/** x402: the facilitator could not be reached, so a payment could not be checked (HTTP 503). */
+export const ZYND_PAYMENT_UNAVAILABLE = -32104;
 
 // -----------------------------------------------------------------------------
 // Method param shapes

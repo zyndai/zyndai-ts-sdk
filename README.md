@@ -201,8 +201,12 @@ console.log(data.response);
 | `entityUrl` | `string` | — | Public base URL advertised to the registry (required for inbound calls) |
 | `webhookUrl` | `string` | — | Override the full webhook URL if non-standard |
 | `registryUrl` | `string` | `"https://zns01.zynd.ai"` | Registry endpoint |
-| `price` | `string` | — | x402 price string, e.g. `"$0.01"` |
+| `price` | `string` | — | Price per call, e.g. `"$0.01"`. Advertised on the card; **charged only when `enforcePayment` is on** |
 | `entityPricing` | `{ base_price_usd: number; currency: string }` | — | Structured pricing (alternative to `price`) |
+| `enforcePayment` | `boolean` | `false` | Require an x402 payment for every new task ([details](#x402-micropayments)). Env: `ZYND_ENFORCE_PAYMENT=1` |
+| `paymentFacilitatorUrl` | `string` | `https://x402.org/facilitator` | x402 facilitator. Env: `X402_FACILITATOR_URL` |
+| `paymentNetwork` | `string` | `eip155:84532` | CAIP-2 network (Base Sepolia). Env: `X402_NETWORK` |
+| `paymentTimeoutSeconds` | `number` | `600` | How long a payer's signed authorization stays valid (must outlive the job) |
 | `keypairPath` | `string` | — | Path to keypair JSON file |
 | `configDir` | `string` | — | Directory to search for keypair when `keypairPath` is unset |
 | `developerKeypairPath` | `string` | — | Developer key for HD derivation |
@@ -248,6 +252,9 @@ Schemas are converted to JSON Schema and published on `/.well-known/agent.json` 
 | `ZYND_REGISTRY_URL` | Registry URL override |
 | `ZYND_HOME` | Config directory (default: `~/.zynd`) |
 | `ZYND_ENTITY_URL` | Public base URL for the entity (overrides config) |
+| `ZYND_ENFORCE_PAYMENT` | `1` to charge callers the agent's `price` over x402 |
+| `X402_FACILITATOR_URL` | x402 facilitator URL (default `https://x402.org/facilitator`) |
+| `X402_NETWORK` | x402 network, CAIP-2 (default `eip155:84532`, Base Sepolia) |
 
 Keypair resolution order (first match wins):
 
@@ -437,18 +444,40 @@ The entity card is written to `.well-known/agent.json` on startup and served liv
 
 ### x402 Micropayments
 
-Set `price` to charge callers per request via [x402](https://x402.org) on Base Sepolia:
+An agent can charge callers per request over [x402](https://x402.org) (v2, `exact` scheme, EVM; Base Sepolia test USDC by default). Setting a price only *advertises* it on the agent card; to actually charge, turn payment on:
 
 ```ts
 const agent = new ZyndAIAgent({
   name: "paid-agent",
-  price: "$0.01",
-  // or structured:
-  entityPricing: { base_price_usd: 0.01, currency: "USDC" },
+  price: "$0.01",            // or entityPricing: { base_price_usd: 0.01, currency: "USDC" }
+  enforcePayment: true,      // or env ZYND_ENFORCE_PAYMENT=1
 });
 ```
 
-The ETH payment address is derived deterministically from the Ed25519 private key via `SHA-256(privateKeyBytes)`.
+What a caller sees:
+
+1. A call with no payment gets **HTTP 402** and a `PAYMENT-REQUIRED` header (JSON-RPC error `-32103`) that says what to pay and to whom.
+2. The caller signs an EIP-3009 authorization and retries with `PAYMENT-SIGNATURE`. The server checks it with the facilitator **before** the job runs.
+3. The payment is **settled on chain only after the task completes**. A failed, cancelled or rejected task is never charged. A completed reply carries `PAYMENT-RESPONSE`, and `task.metadata.x402` holds `{ settled, transaction, network, payer }` (also visible later through `tasks/get`, which is how you read it for `blocking: false` calls).
+4. A follow-up message on a task that is waiting in `input-required` rides on the first payment; it is not charged again. `message/stream` is gated the same way.
+
+The payee address is the agent's own wallet, derived from its Ed25519 key as `SHA-256(privateKeyBytes)` (`agent.payToAddress`). If settlement fails after the work was done, the result is withheld and the caller gets a 402.
+
+Payment is off unless you set `enforcePayment`, so upgrading never starts charging an existing agent. It needs a `price`, and is ignored in dev mode (`ZYND_DEV=1`), where callers are unauthenticated. For mainnet, set `paymentNetwork`, `paymentFacilitatorUrl` and a production facilitator; the default points at test USDC.
+
+Paying as a caller is opt-in too. Give `A2AClient` a `payment` option and it answers a 402 once, up to a USD cap:
+
+```ts
+import { A2AClient } from "zyndai";
+
+const client = new A2AClient({
+  keypair, entityId,
+  payment: { maxPaymentUsd: 0.25 },   // default cap $0.10; `payment: true` for the defaults
+});
+const reply = await client.ask(target.entity_url, "What is AAPL?");
+```
+
+The client pays from the wallet derived from its own keypair (override with `payment.signer`), refuses a price above the cap *before* signing anything (`PaymentRefusedError`), and only pays in stablecoins it knows are worth $1 (USDC on Base and Base Sepolia; add more with `payment.assets`). It re-signs the A2A message for the paid retry, so it also works against servers that check `x-zynd-auth` before payment, such as the Zynd n8n Gateway. Without `payment`, a 402 is thrown as an ordinary error and nothing is signed.
 
 ### End-to-end encryption
 

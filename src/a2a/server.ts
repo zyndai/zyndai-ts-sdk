@@ -40,6 +40,8 @@ import {
   ZYND_AUTH_FAILED,
   ZYND_REPLAY_DETECTED,
   ZYND_AUTH_EXPIRED,
+  ZYND_PAYMENT_REQUIRED,
+  ZYND_PAYMENT_UNAVAILABLE,
   TERMINAL_STATES,
 } from "./types.js";
 import type {
@@ -67,6 +69,14 @@ import {
 } from "./adapter.js";
 import type { Ed25519Keypair } from "../identity.js";
 import { AgentMessage } from "../message.js";
+import {
+  X402PaymentGate,
+  PaymentRequiredError,
+  PaymentUnavailableError,
+  type PaymentGateOptions,
+  type SettledPayment,
+  type VerifiedPayment,
+} from "./payment-gate.js";
 
 // -----------------------------------------------------------------------------
 // Public types
@@ -161,6 +171,13 @@ export interface A2AServerOptions {
   assetsDir?: string;
   /** Enable dev UI at GET /. Forces authMode="open". */
   devMode?: boolean;
+  /**
+   * x402 payment gate (G19). When set, `message/send` and `message/stream` that start a new task
+   * answer HTTP 402 until the caller attaches a valid `PAYMENT-SIGNATURE`; the payment is settled
+   * only after the task completes. Pass options, or a ready-made `X402PaymentGate`.
+   * Ignored (with a warning) in dev mode, where callers are unauthenticated.
+   */
+  payment?: PaymentGateOptions | X402PaymentGate;
 }
 
 export const DEFAULT_MAX_BODY_BYTES = 25 * 1024 * 1024;
@@ -183,6 +200,13 @@ export class A2AServer {
   private readonly replayCache = new ReplayCache();
   private handler: Handler | null = null;
 
+  /** x402 gate, or null when the agent is free. */
+  private readonly gate: X402PaymentGate | null;
+  /** Verified-but-unsettled payments, by task id. */
+  private readonly pendingPayments = new Map<string, VerifiedPayment>();
+  /** In-flight / finished settlement per task, so concurrent callers settle exactly once. */
+  private readonly settlements = new Map<string, Promise<SettledPayment | null>>();
+
   constructor(opts: A2AServerOptions) {
     this.opts = {
       host: opts.host ?? "0.0.0.0",
@@ -194,6 +218,16 @@ export class A2AServer {
       ...opts,
       ...(opts.devMode ? { authMode: "open" as const } : {}),
     };
+
+    if (opts.payment && opts.devMode) {
+      console.warn("[a2a-server] payment gate ignored: dev mode accepts unauthenticated callers");
+    }
+    this.gate =
+      opts.payment && !opts.devMode
+        ? opts.payment instanceof X402PaymentGate
+          ? opts.payment
+          : new X402PaymentGate(opts.payment)
+        : null;
 
     this.taskStore = new TaskStore({ idleTtlMs: opts.idleTtlMs });
     this.app = express();
@@ -389,7 +423,7 @@ export class A2AServer {
   // -------------------------------------------------------------------------
 
   private async handleMessageSend(
-    _req: Request,
+    req: Request,
     res: Response,
     id: string | number | null,
     params: unknown,
@@ -400,6 +434,17 @@ export class A2AServer {
       return;
     }
     const { message } = parseResult.data;
+
+    // x402 (G19). A message that resumes a parked task rides on the payment already taken for it.
+    // The unpaid challenge is answered *before* x-zynd-auth is checked, so the caller can retry the
+    // same signed message with a payment attached without tripping the replay cache.
+    const existing = message.taskId ? this.taskStore.get(message.taskId) : null;
+    const resuming = existing?.status.state === "input-required" || existing?.status.state === "auth-required";
+    const needsPayment = this.gate !== null && !resuming;
+    if (needsPayment && this.gate && !this.gate.hasPayment(req.headers)) {
+      await this.respondPayment(res, id, () => this.gate!.challenge(this.resourceUrl(req)));
+      return;
+    }
 
     // Verify x-zynd-auth.
     let authCtx;
@@ -418,6 +463,16 @@ export class A2AServer {
             : ZYND_AUTH_FAILED;
       this.respondError(res, id, code, err.message);
       return;
+    }
+
+    // x402: check the proof (facilitator /verify) before any task exists, so a 402 leaves no trace.
+    let verified = undefined as VerifiedPayment | undefined;
+    if (needsPayment && this.gate) {
+      const ok = await this.respondPayment(res, id, async () => {
+        verified = await this.gate!.verify(req.headers, this.resourceUrl(req));
+        return undefined;
+      });
+      if (!ok) return;
     }
 
     // Resolve task.
@@ -442,15 +497,22 @@ export class A2AServer {
         else this.respondError(res, id, A2A_TASK_NOT_FOUND, "Task vanished while resuming");
         return;
       }
+      // Parked but not resumable, so this would start fresh work: that needs a payment of its own.
+      if (this.gate && !verified) {
+        await this.respondPayment(res, id, () => this.gate!.challenge(this.resourceUrl(req)));
+        return;
+      }
     }
 
     // Fresh dispatch.
+    if (verified) this.holdPayment(taskId, verified);
     this.taskStore.appendMessage(taskId, message);
     this.taskStore.setState(taskId, "working");
 
     void this.dispatch(taskId, contextId, message, authCtx);
 
-    // Honor blocking=false — return working state immediately.
+    // Honor blocking=false — return working state immediately. The payment is settled when the
+    // task completes; the transaction lands in `task.metadata.x402` (see tasks/get).
     if (parseResult.data.configuration?.blocking === false) {
       const workingTask = this.taskStore.get(taskId);
       if (workingTask) this.respondSuccess(res, id, workingTask);
@@ -461,8 +523,27 @@ export class A2AServer {
     // Wait for settle (terminal or interrupted).
     await this.waitForSettle(taskId);
     const finalTask = this.taskStore.get(taskId);
-    if (finalTask) this.respondSuccess(res, id, finalTask);
-    else this.respondError(res, id, A2A_TASK_NOT_FOUND, "Task vanished after dispatch");
+    if (!finalTask) {
+      this.respondError(res, id, A2A_TASK_NOT_FOUND, "Task vanished after dispatch");
+      return;
+    }
+
+    // Terminal + paid: take the money now so the reply can carry PAYMENT-RESPONSE. A task parked in
+    // input-required keeps its payment until it finishes (dispatch() settles it then).
+    if (verified && TERMINAL_STATES.has(finalTask.status.state)) {
+      const settled = await this.settleTask(taskId);
+      if (settled && !settled.success) {
+        // Do not hand over the result of work the caller did not pay for.
+        await this.respondPayment(res, id, async () => {
+          throw await this.gate!.challenge(this.resourceUrl(req), "Payment settlement failed", settled.errorReason ?? "settle_failed");
+        });
+        return;
+      }
+      if (settled) res.setHeader("PAYMENT-RESPONSE", settled.header);
+      this.respondSuccess(res, id, this.taskStore.get(taskId) ?? finalTask);
+      return;
+    }
+    this.respondSuccess(res, id, finalTask);
   }
 
   // -------------------------------------------------------------------------
@@ -470,7 +551,7 @@ export class A2AServer {
   // -------------------------------------------------------------------------
 
   private async handleMessageStream(
-    _req: Request,
+    req: Request,
     res: Response,
     id: string | number | null,
     params: unknown,
@@ -481,6 +562,13 @@ export class A2AServer {
       return;
     }
     const { message } = parseResult.data;
+
+    // x402 (G19): same gate as message/send. A stream always starts a task, so it always pays.
+    // The 402 has to go out before the SSE headers do.
+    if (this.gate && !this.gate.hasPayment(req.headers)) {
+      await this.respondPayment(res, id, () => this.gate!.challenge(this.resourceUrl(req)));
+      return;
+    }
 
     let authCtx;
     try {
@@ -494,9 +582,19 @@ export class A2AServer {
       return;
     }
 
+    let verified = undefined as VerifiedPayment | undefined;
+    if (this.gate) {
+      const ok = await this.respondPayment(res, id, async () => {
+        verified = await this.gate!.verify(req.headers, this.resourceUrl(req));
+        return undefined;
+      });
+      if (!ok) return;
+    }
+
     const taskId = message.taskId ?? this.taskStore.newTaskId();
     const contextId = message.contextId ?? this.taskStore.newContextId();
     this.taskStore.getOrCreate(taskId, contextId);
+    if (verified) this.holdPayment(taskId, verified);
     this.taskStore.appendMessage(taskId, message);
 
     // Inline pushNotificationConfig — same shortcut as message/send.
@@ -662,6 +760,23 @@ export class A2AServer {
   // -------------------------------------------------------------------------
 
   private async dispatch(
+    taskId: string,
+    contextId: string,
+    message: Message,
+    authCtx: { signed: boolean; entityId: string | null; fqan: string | null },
+  ): Promise<void> {
+    try {
+      await this.runHandler(taskId, contextId, message, authCtx);
+    } finally {
+      // The handler call spans the whole task, including any input-required waits, so this is the
+      // one place every outcome (completed, failed, cancelled, no handler) passes through.
+      if (this.pendingPayments.has(taskId)) {
+        await this.settleTask(taskId).catch((err) => console.error("[a2a-server] x402 settle threw:", err));
+      }
+    }
+  }
+
+  private async runHandler(
     taskId: string,
     contextId: string,
     message: Message,
@@ -962,6 +1077,113 @@ export class A2AServer {
     // Use 200 OK with a JSON-RPC error envelope per spec; the JSON body
     // carries the actual error info.
     res.json(body);
+  }
+
+  // -------------------------------------------------------------------------
+  // x402 payments (G19)
+  // -------------------------------------------------------------------------
+
+  /** Public URL of the A2A endpoint, quoted back to the payer in the 402 challenge. */
+  private resourceUrl(req: Request): string {
+    const card = (() => {
+      try {
+        return this.opts.agentCardBuilder() as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    })();
+    if (typeof card["url"] === "string" && card["url"]) return card["url"];
+    return `${req.protocol}://${req.get("host") ?? "localhost"}${this.opts.a2aPath}`;
+  }
+
+  /**
+   * Run a payment step and turn its failure into an HTTP reply. `fn` may throw a
+   * PaymentRequiredError / PaymentUnavailableError, or return a PaymentRequiredError to send.
+   * Returns true when the step passed (nothing was sent), false when a reply was written.
+   */
+  private async respondPayment(
+    res: Response,
+    id: string | number | null,
+    fn: () => Promise<PaymentRequiredError | undefined>,
+  ): Promise<boolean> {
+    try {
+      const err = await fn();
+      if (!err) return true;
+      this.sendPaymentRequired(res, id, err);
+      return false;
+    } catch (e) {
+      if (e instanceof PaymentRequiredError) {
+        this.sendPaymentRequired(res, id, e);
+        return false;
+      }
+      if (e instanceof PaymentUnavailableError) {
+        const body: JsonRpcResponse = {
+          jsonrpc: "2.0",
+          id,
+          error: { code: ZYND_PAYMENT_UNAVAILABLE, message: e.message },
+        };
+        res.status(503).json(body);
+        return false;
+      }
+      throw e;
+    }
+  }
+
+  private sendPaymentRequired(res: Response, id: string | number | null, err: PaymentRequiredError): void {
+    const body: JsonRpcResponse = {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: ZYND_PAYMENT_REQUIRED,
+        message: err.message,
+        data: { reason: err.reason, x402: err.challenge },
+      },
+    };
+    res.setHeader("PAYMENT-REQUIRED", err.header);
+    res.status(402).json(body);
+  }
+
+  /** Remember a verified payment until the task it paid for finishes. */
+  private holdPayment(taskId: string, verified: VerifiedPayment): void {
+    this.settlements.delete(taskId);
+    this.pendingPayments.set(taskId, verified);
+  }
+
+  /**
+   * Charge for a task once it is `completed`; release the proof for any other outcome. Safe to call
+   * from several places: the settlement runs once and every caller gets the same result.
+   * Returns null when there is nothing to settle (free agent, or the task did not complete).
+   */
+  private settleTask(taskId: string): Promise<SettledPayment | null> {
+    const inflight = this.settlements.get(taskId);
+    if (inflight) return inflight;
+    const gate = this.gate;
+    const verified = this.pendingPayments.get(taskId);
+    if (!gate || !verified) return Promise.resolve(null);
+
+    const run = (async (): Promise<SettledPayment | null> => {
+      const state = this.taskStore.get(taskId)?.status.state;
+      if (state !== "completed") {
+        gate.release(verified);
+        this.pendingPayments.delete(taskId);
+        return null;
+      }
+      const settled = await gate.settle(verified);
+      this.pendingPayments.delete(taskId);
+      this.taskStore.setMetadata(taskId, {
+        x402: settled.success
+          ? { settled: true, transaction: settled.transaction, network: settled.network, payer: settled.payer }
+          : { settled: false, error: settled.errorReason ?? "settle_failed" },
+      });
+      if (!settled.success) {
+        console.error(`[a2a-server] x402 settlement failed for task ${taskId}: ${settled.errorReason ?? "unknown"}`);
+      }
+      return settled;
+    })();
+    this.settlements.set(taskId, run);
+    // Keep the result around briefly for late callers, then forget it.
+    void run.finally(() => setTimeout(() => this.settlements.delete(taskId), 5 * 60 * 1000).unref());
+    return run;
   }
 
   private waitForSettle(taskId: string, maxMs = 5 * 60 * 1000): Promise<void> {

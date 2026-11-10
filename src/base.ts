@@ -26,6 +26,7 @@ import { SearchAndDiscoveryManager } from "./search.js";
 import { buildEntityUrl } from "./config-manager.js";
 import { registerEntity, getEntity, updateEntity } from "./registry.js";
 import { A2AServer, type Handler, type HandlerInput, type TaskHandle } from "./a2a/server.js";
+import { parsePriceUsd, type PaymentGateOptions } from "./a2a/payment-gate.js";
 import type { SignedAgentCard } from "./a2a/card.js";
 
 // -----------------------------------------------------------------------------
@@ -182,10 +183,39 @@ export class ZyndBase {
       devMode: isDevMode,
     };
     if (fqan) a2aOpts.fqan = fqan;
+    const payment = this.resolvePaymentGate();
+    if (payment) a2aOpts.payment = payment;
     if (validation.payloadModel) a2aOpts.payloadModel = validation.payloadModel;
     if (validation.outputModel) a2aOpts.outputModel = validation.outputModel;
 
     this.server = new A2AServer(a2aOpts);
+  }
+
+  /**
+   * G19: turn `price` / `entityPricing` into an x402 gate when payment is enforced. Returns
+   * undefined for a free agent (the default), so existing agents behave as before an upgrade.
+   */
+  private resolvePaymentGate(): PaymentGateOptions | undefined {
+    const env = process.env;
+    const enforce = this.config.enforcePayment ?? /^(1|true|yes)$/i.test(env["ZYND_ENFORCE_PAYMENT"] ?? "");
+    if (!enforce) return undefined;
+
+    const price = parsePriceUsd(this.config.price ?? this.config.entityPricing?.base_price_usd);
+    if (price === undefined) {
+      throw new Error(
+        "enforcePayment is on but the agent has no price. Set `price` (e.g. \"$0.01\") or `entityPricing.base_price_usd`.",
+      );
+    }
+    const network = this.config.paymentNetwork ?? env["X402_NETWORK"];
+    const facilitatorUrl = this.config.paymentFacilitatorUrl ?? env["X402_FACILITATOR_URL"];
+    return {
+      price,
+      payTo: this.payToAddress,
+      ...(network ? { network: network as `${string}:${string}` } : {}),
+      ...(facilitatorUrl ? { facilitatorUrl } : {}),
+      ...(this.config.paymentTimeoutSeconds ? { maxTimeoutSeconds: this.config.paymentTimeoutSeconds } : {}),
+      ...(this.config.description ? { description: this.config.description } : {}),
+    };
   }
 
   // ---------------------------------------------------------------------------

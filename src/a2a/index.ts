@@ -95,6 +95,22 @@ export type {
   ResolvedTransport,
 } from "./client.js";
 
+export {
+  X402PaymentGate,
+  PaymentRequiredError,
+  PaymentUnavailableError,
+  parsePriceUsd,
+  DEFAULT_X402_NETWORK,
+  DEFAULT_X402_FACILITATOR_URL,
+  DEFAULT_PAYMENT_TIMEOUT_SECONDS,
+} from "./payment-gate.js";
+export type { PaymentGateOptions, VerifiedPayment, SettledPayment } from "./payment-gate.js";
+
+export { A2APayer, PaymentRefusedError, DEFAULT_MAX_PAYMENT_USD } from "./payment-client.js";
+export type { ClientPaymentOptions } from "./payment-client.js";
+
+export { ZYND_PAYMENT_REQUIRED, ZYND_PAYMENT_UNAVAILABLE } from "./types.js";
+
 export { buildAgentCard, signAgentCard } from "./card.js";
 export type {
   BuildCardOptions,

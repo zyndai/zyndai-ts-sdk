@@ -24,12 +24,19 @@ import type {
 import { signMessage, type SignOptions } from "./auth.js";
 import { toA2AMessage, taskReplyText, type Attachment } from "./adapter.js";
 import type { Ed25519Keypair } from "../identity.js";
+import { A2APayer, type ClientPaymentOptions } from "./payment-client.js";
 
 export interface ClientOptions {
   keypair: Ed25519Keypair;
   entityId: string;
   fqan?: string;
   developerProof?: import("./types.js").ZyndAuth["developer_proof"];
+  /**
+   * Pay x402 challenges (HTTP 402) automatically, once per call, up to `maxPaymentUsd`
+   * (default $0.10). Off unless set: without it a paid agent's 402 is thrown as an error.
+   * Pass `true` for the defaults, which pay from the wallet derived from `keypair`.
+   */
+  payment?: ClientPaymentOptions | true;
 }
 
 export interface CallOptions {
@@ -60,9 +67,37 @@ export interface CallOptions {
 
 export class A2AClient {
   private readonly opts: ClientOptions;
+  private readonly payer: A2APayer | null;
 
   constructor(opts: ClientOptions) {
     this.opts = opts;
+    this.payer = opts.payment
+      ? new A2APayer({ keypair: opts.keypair, ...(opts.payment === true ? {} : opts.payment) })
+      : null;
+  }
+
+  /**
+   * POST that survives an x402 challenge: on HTTP 402, if payment is enabled, sign the server's
+   * requirements and send the call once more with `PAYMENT-SIGNATURE`.
+   *
+   * `makeBody` is called again for the retry so the A2A message is signed afresh. Some servers
+   * (the Zynd n8n Gateway among them) check `x-zynd-auth` before payment and burn its nonce on the
+   * unpaid attempt, so resending the same signed message would be refused as a replay.
+   */
+  private async post(
+    url: string,
+    headers: Record<string, string>,
+    makeBody: () => string,
+    signal: AbortSignal,
+  ): Promise<globalThis.Response> {
+    const send = (h: Record<string, string>): Promise<globalThis.Response> =>
+      fetch(url, { method: "POST", headers: h, body: makeBody(), signal });
+    const first = await send(headers);
+    if (first.status !== 402 || !this.payer) return first;
+
+    const challenge = await first.json().catch(() => null);
+    const paid = await this.payer.answer(first, challenge);
+    return send({ ...headers, ...paid });
   }
 
   /** Synchronous request — returns the final Task (or throws). */
@@ -70,24 +105,19 @@ export class A2AClient {
     const transport = callOpts.transport ?? "JSONRPC";
     if (transport === "HTTP+JSON") return this.syncHttpJson(callOpts);
 
-    const message = this.buildMessage(callOpts);
-    const rpc = {
-      jsonrpc: "2.0" as const,
-      id: randomUUID(),
-      method: "message/send",
-      params: { message, configuration: { blocking: callOpts.blocking ?? true } },
-    };
+    const body = (): string =>
+      JSON.stringify({
+        jsonrpc: "2.0" as const,
+        id: randomUUID(),
+        method: "message/send",
+        params: { message: this.buildMessage(callOpts), configuration: { blocking: callOpts.blocking ?? true } },
+      });
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), callOpts.timeoutMs ?? 5 * 60 * 1000);
 
     let resp: globalThis.Response;
     try {
-      resp = await fetch(callOpts.url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(rpc),
-        signal: ctrl.signal,
-      });
+      resp = await this.post(callOpts.url, { "Content-Type": "application/json" }, body, ctrl.signal);
     } finally {
       clearTimeout(timer);
     }
@@ -113,19 +143,22 @@ export class A2AClient {
    * card advertises `transport: "HTTP+JSON"` for the picked interface.
    */
   private async syncHttpJson(callOpts: CallOptions): Promise<ATask> {
-    const message = this.buildMessage(callOpts);
-    const params = { message, configuration: { blocking: callOpts.blocking ?? true } };
+    const body = (): string =>
+      JSON.stringify({
+        message: this.buildMessage(callOpts),
+        configuration: { blocking: callOpts.blocking ?? true },
+      });
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), callOpts.timeoutMs ?? 5 * 60 * 1000);
 
     let resp: globalThis.Response;
     try {
-      resp = await fetch(callOpts.url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(params),
-        signal: ctrl.signal,
-      });
+      resp = await this.post(
+        callOpts.url,
+        { "Content-Type": "application/json", Accept: "application/json" },
+        body,
+        ctrl.signal,
+      );
     } finally {
       clearTimeout(timer);
     }
@@ -157,27 +190,24 @@ export class A2AClient {
 
   /** Streaming request — yields StreamEvents until the server closes. */
   async *stream(callOpts: CallOptions): AsyncGenerator<StreamEvent> {
-    const message = this.buildMessage(callOpts);
-    const rpc = {
-      jsonrpc: "2.0" as const,
-      id: randomUUID(),
-      method: "message/stream",
-      params: { message },
-    };
+    const body = (): string =>
+      JSON.stringify({
+        jsonrpc: "2.0" as const,
+        id: randomUUID(),
+        method: "message/stream",
+        params: { message: this.buildMessage(callOpts) },
+      });
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), callOpts.timeoutMs ?? 30 * 60 * 1000);
 
     let resp: globalThis.Response;
     try {
-      resp = await fetch(callOpts.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-        },
-        body: JSON.stringify(rpc),
-        signal: ctrl.signal,
-      });
+      resp = await this.post(
+        callOpts.url,
+        { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body,
+        ctrl.signal,
+      );
     } catch (err) {
       clearTimeout(timer);
       throw err;
