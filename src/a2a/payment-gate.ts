@@ -109,7 +109,9 @@ const sameAddr = (a: string, b: string): boolean => a.toLowerCase() === b.toLowe
 /** `"$0.01"`, `"0.01 USDC"`, `0.01` -> a positive number, or undefined. */
 export function parsePriceUsd(price: string | number | undefined): number | undefined {
   if (price === undefined) return undefined;
-  const n = typeof price === "number" ? price : parseFloat(String(price).replace(/^[^0-9.]+/, ""));
+  // Anything before the number must be a currency marker ("$", "USD "), never a sign.
+  const m = typeof price === "number" ? null : /^[^0-9.\-+]*(\d+(?:\.\d+)?|\.\d+)/.exec(String(price).trim());
+  const n = typeof price === "number" ? price : m ? parseFloat(m[1] as string) : NaN;
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 

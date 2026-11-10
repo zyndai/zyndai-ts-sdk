@@ -12,7 +12,7 @@ import { verifyTypedData } from "viem";
 import { A2AServer } from "../src/a2a/server";
 import { A2AClient } from "../src/a2a/client";
 import { PaymentRefusedError } from "../src/a2a/payment-client";
-import { X402PaymentGate } from "../src/a2a/payment-gate";
+import { X402PaymentGate, parsePriceUsd } from "../src/a2a/payment-gate";
 import { X402PaymentProcessor } from "../src/payment";
 import { generateKeypair, generateEntityId } from "../src/identity";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
@@ -339,6 +339,15 @@ describe("G19: SDK server asks for x402 payment", () => {
       expect(seen[1]!.nonce).not.toBe(seen[0]!.nonce);
     } finally {
       await new Promise((r) => srv.close(r));
+    }
+  });
+
+  it("parses prices, and never turns a negative or non-numeric one into a charge", () => {
+    expect(parsePriceUsd("$0.01")).toBe(0.01);
+    expect(parsePriceUsd("0.25 USDC")).toBe(0.25);
+    expect(parsePriceUsd(0.5)).toBe(0.5);
+    for (const bad of ["free", "", "-1", "$-1", -0.5, 0, "0", undefined]) {
+      expect(parsePriceUsd(bad as string | number | undefined)).toBeUndefined();
     }
   });
 
