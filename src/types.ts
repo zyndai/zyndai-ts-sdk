@@ -102,6 +102,20 @@ export const ZyndBaseConfigSchema = z.object({
   // Pricing
   price: z.string().optional(),
   entityPricing: PricingConfigSchema.nullish().transform((v) => v ?? undefined),
+  /**
+   * Charge callers over x402 (G19). Off by default: `price` / `entityPricing` only *advertise* a
+   * price until this is true (or env `ZYND_ENFORCE_PAYMENT=1`). Needs a price.
+   */
+  enforcePayment: z.boolean().optional(),
+  /** x402 facilitator. Default `https://x402.org/facilitator`; env `X402_FACILITATOR_URL`. */
+  paymentFacilitatorUrl: z.string().optional(),
+  /** CAIP-2 network. Default `eip155:84532` (Base Sepolia); env `X402_NETWORK`. */
+  paymentNetwork: z
+    .string()
+    .regex(/^[^:\s]+:[^:\s]+$/, "paymentNetwork must be a CAIP-2 id such as eip155:84532")
+    .optional(),
+  /** Seconds a payer's signed authorization stays valid (it must outlive the job). Default 600. */
+  paymentTimeoutSeconds: z.number().int().positive().optional(),
 
   // Limits
   messageHistoryLimit: z.number().int().default(100),

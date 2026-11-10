@@ -145,6 +145,13 @@ export class TaskStore {
     this.broadcast(entry, event);
   }
 
+  /** Merge keys into `task.metadata` (e.g. the x402 settlement). Does not emit an event. */
+  setMetadata(id: string, patch: Record<string, unknown>): void {
+    const entry = this.tasks.get(id);
+    if (!entry) return;
+    entry.task.metadata = { ...(entry.task.metadata ?? {}), ...patch };
+  }
+
   appendMessage(id: string, message: Message): void {
     const entry = this.tasks.get(id);
     if (!entry) return;

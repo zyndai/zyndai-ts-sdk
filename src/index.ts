@@ -111,6 +111,17 @@ export {
   PushNotificationConfigSchema,
   ZyndAuthSchema,
   DEFAULT_MAX_BODY_BYTES,
+  X402PaymentGate,
+  PaymentRequiredError,
+  PaymentUnavailableError,
+  PaymentRefusedError,
+  A2APayer,
+  parsePriceUsd,
+  DEFAULT_X402_NETWORK,
+  DEFAULT_X402_FACILITATOR_URL,
+  DEFAULT_MAX_PAYMENT_USD,
+  ZYND_PAYMENT_REQUIRED,
+  ZYND_PAYMENT_UNAVAILABLE,
 } from "./a2a/index.js";
 
 export type {
@@ -148,6 +159,10 @@ export type {
   InboundMessage,
   A2AServerOptions,
   ClientOptions,
+  ClientPaymentOptions,
+  PaymentGateOptions,
+  VerifiedPayment,
+  SettledPayment,
   CallOptions,
   A2ATransport,
   ResolvedTransport,
